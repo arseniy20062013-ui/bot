@@ -29,6 +29,45 @@ dp = Dispatcher()
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
 
 # ============================================================
+#  КОМАНДЫ ДЛЯ СТРОКИ ВВОДА
+# ============================================================
+PRIVATE_COMMANDS = [
+    BotCommand(command="start", description="🏠 Главное меню"),
+    BotCommand(command="help", description="📋 Все команды"),
+    BotCommand(command="profile", description="👤 Мой профиль"),
+    BotCommand(command="top", description="🏆 Топ игроков"),
+    BotCommand(command="work", description="⛏ Работа"),
+    BotCommand(command="daily", description="🎁 Бонус"),
+    BotCommand(command="shop", description="🛒 Магазин"),
+    BotCommand(command="casino", description="🎰 Казино"),
+    BotCommand(command="darts", description="🎯 Дартс"),
+    BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
+    BotCommand(command="guess", description="🔢 Угадай число"),
+    BotCommand(command="rps", description="✊ КНБ"),
+]
+
+GROUP_COMMANDS = [
+    BotCommand(command="help", description="📋 Все команды"),
+    BotCommand(command="profile", description="👤 Мой профиль"),
+    BotCommand(command="top", description="🏆 Топ"),
+    BotCommand(command="work", description="⛏ Работа"),
+    BotCommand(command="daily", description="🎁 Бонус"),
+    BotCommand(command="shop", description="🛒 Магазин"),
+    BotCommand(command="casino", description="🎰 Казино"),
+    BotCommand(command="darts", description="🎯 Дартс"),
+    BotCommand(command="dice", description="🎲 Кости (дуэль)"),
+    BotCommand(command="basketball", description="🏀 Баскетбол"),
+    BotCommand(command="football", description="⚽ Футбол"),
+    BotCommand(command="bowling", description="🎳 Боулинг"),
+    BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
+    BotCommand(command="guess", description="🔢 Угадай число"),
+    BotCommand(command="rps", description="✊ КНБ"),
+    BotCommand(command="setwelcome", description="✏️ Приветствие"),
+    BotCommand(command="setautoschedule", description="⏰ Настройка авто-закрытия"),
+    BotCommand(command="rp", description="🎭 Список RP действий"),
+]
+
+# ============================================================
 #  БАЗА ДАННЫХ
 # ============================================================
 def db(query, params=(), fetch=False):
@@ -279,7 +318,7 @@ class MainMiddleware(BaseMiddleware):
 dp.message.middleware(MainMiddleware())
 
 # ============================================================
-#  ГЛАВНОЕ МЕНЮ
+#  ГЛАВНОЕ МЕНЮ И КНОПКИ
 # ============================================================
 def main_menu_kb(username):
     return InlineKeyboardMarkup(inline_keyboard=[
