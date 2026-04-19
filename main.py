@@ -95,7 +95,7 @@ db('''CREATE TABLE IF NOT EXISTS chat_settings (
 )''')
 
 # ============================================================
-#  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ (КАК IRIS)
+#  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ
 # ============================================================
 def detect_gender_by_name(name: str) -> int:
     name_lower = name.lower().strip()
@@ -112,89 +112,49 @@ def detect_gender_by_name(name: str) -> int:
 #  АВТОМОДЕРАЦИЯ (ПО ПРАВИЛАМ ЧАТА)
 # ============================================================
 BAD_WORDS = {
-    'мат': [
-        'хуй', 'пизда', 'бля', 'ебать', 'ебаный', 'мудак', 'сука', 'гандон', 'пидор', 'хуесос',
-        'долбоеб', 'уебок', 'пиздец', 'ебанутый', 'залупа', 'хуйло', 'сучка', 'блядина'
-    ],
-    '18plus': [
-        'порно', 'секс', 'голый', 'голая', 'эротика', 'интим', 'пенис', 'влагалище', 'оральный',
-        'минет', 'куни', 'трах', 'ебля', 'дрочить', 'мастурбация', 'член', 'вагина', 'грудь'
-    ],
-    'insult': [
-        'тупой', 'дебил', 'идиот', 'кретин', 'лох', 'олень', 'баран', 'овца', 'дурак', 'глупый',
-        'урод', 'чмо', 'шлюха', 'проститутка'
-    ],
+    'мат': ['хуй', 'пизда', 'бля', 'ебать', 'мудак', 'сука', 'гандон', 'пидор', 'хуесос', 'долбоеб', 'уебок', 'пиздец', 'ебанутый', 'залупа', 'хуйло', 'сучка', 'блядина'],
+    '18plus': ['порно', 'секс', 'голый', 'голая', 'эротика', 'интим', 'пенис', 'влагалище', 'оральный', 'минет', 'куни', 'трах', 'ебля', 'дрочить', 'мастурбация', 'член', 'вагина', 'грудь'],
+    'insult': ['тупой', 'дебил', 'идиот', 'кретин', 'лох', 'олень', 'баран', 'овца', 'дурак', 'глупый', 'урод', 'чмо', 'шлюха', 'проститутка'],
     'spam': [r'http[s]?://', r'www\.', r'\.ru', r'\.com', r'\.org', r'\.net']
 }
-
 PUNISHMENT_RULES = {
-    '18plus': {'warn_days': 30, 'mute_hours': 4},
-    'insult': {'warn_days': 30, 'mute_hours': 8},
-    'spam': {'warn_days': 30, 'mute_hours': 4},
-    'мат': {'warn_days': 30, 'mute_hours': 4},
+    '18plus': {'warn_days': 30, 'mute_hours': 4, 'rule': '1.1. 18+ контент'},
+    'insult': {'warn_days': 30, 'mute_hours': 8, 'rule': '1.2. Оскорбления'},
+    'spam': {'warn_days': 30, 'mute_hours': 4, 'rule': '1.4. Нежелательные сообщения (спам/ссылки)'},
+    'мат': {'warn_days': 30, 'mute_hours': 4, 'rule': '1.4. Нежелательные сообщения (мат)'},
 }
-
 async def auto_moderate(message: types.Message):
-    if message.chat.type not in ("group", "supergroup"):
-        return
-    if message.from_user.is_bot:
-        return
-    if await is_admin(message.chat.id, message.from_user.id):
-        return
-
+    if message.chat.type not in ("group", "supergroup"): return
+    if message.from_user.is_bot: return
+    if await is_admin(message.chat.id, message.from_user.id): return
     text = (message.text or message.caption or "").lower()
-    if not text:
-        return
-
-    violations = []
+    if not text: return
+    violation = None
     for word in BAD_WORDS['мат']:
-        if word in text:
-            violations.append('мат')
-            break
-    for word in BAD_WORDS['18plus']:
-        if word in text:
-            violations.append('18plus')
-            break
-    for word in BAD_WORDS['insult']:
-        if word in text:
-            violations.append('insult')
-            break
-    for pattern in BAD_WORDS['spam']:
-        if re.search(pattern, text):
-            violations.append('spam')
-            break
-
-    if not violations:
-        return
-
-    violation = violations[0]
-    rule = PUNISHMENT_RULES.get(violation, {'warn_days': 30, 'mute_hours': 4})
-
+        if word in text: violation = 'мат'; break
+    if not violation:
+        for word in BAD_WORDS['18plus']:
+            if word in text: violation = '18plus'; break
+    if not violation:
+        for word in BAD_WORDS['insult']:
+            if word in text: violation = 'insult'; break
+    if not violation:
+        for pattern in BAD_WORDS['spam']:
+            if re.search(pattern, text): violation = 'spam'; break
+    if not violation: return
+    rule = PUNISHMENT_RULES[violation]
     uid = message.from_user.id
     db("UPDATE users SET warns = warns + 1 WHERE id=?", (uid,))
-    warns = db("SELECT warns FROM users WHERE id=?", (uid,), fetch=True)[0][0]
-
-    reason = f"Автомодерация: {violation}"
-    db("INSERT INTO warns_log (user_id, chat_id, reason, date) VALUES (?,?,?,?)",
-       (uid, message.chat.id, reason, int(time.time())))
-
+    reason = f"Автомодерация: нарушение п. {rule['rule']}"
+    db("INSERT INTO warns_log (user_id, chat_id, reason, date) VALUES (?,?,?,?)", (uid, message.chat.id, reason, int(time.time())))
     mute_seconds = rule['mute_hours'] * 3600
     until = int(time.time()) + mute_seconds
     db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
     try:
-        await bot.restrict_chat_member(
-            message.chat.id, uid,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=datetime.fromtimestamp(until, tz=timezone.utc)
-        )
+        await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
         await message.delete()
-        await message.answer(
-            f"⚠️ {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} "
-            f"нарушил(а) правила ({reason}). Выдан мут на {rule['mute_hours']} часов.",
-            delete_after=10
-        )
-    except Exception as e:
-        logging.error(f"Auto-mute error: {e}")
+        await message.answer(f"⚠️ {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} нарушил(а) правила. Мут на {rule['mute_hours']} ч.\n📌 Причина: {reason}", delete_after=15)
+    except: pass
 
 # ============================================================
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -205,64 +165,47 @@ def get_user(uid):
         db("INSERT INTO users (id) VALUES (?)", (uid,))
         return (500, 0, 0, 1.0)
     return r[0]
-
 def add_coins(uid, amount):
-    get_user(uid)
-    db("UPDATE users SET coins=coins+? WHERE id=?", (amount, uid))
-
+    get_user(uid); db("UPDATE users SET coins=coins+? WHERE id=?", (amount, uid))
 def add_xp(uid, amount):
     get_user(uid)
     old_xp = db("SELECT xp FROM users WHERE id=?", (uid,), fetch=True)[0][0]
     db("UPDATE users SET xp=xp+? WHERE id=?", (amount, uid))
     old_lvl = old_xp // 100
     new_lvl = (old_xp + amount) // 100
-    if new_lvl > old_lvl:
-        return new_lvl
+    if new_lvl > old_lvl: return new_lvl
     return None
-
 def get_nickname(user_id, chat_id):
     row = db("SELECT nickname FROM user_nicknames WHERE user_id=? AND chat_id=?", (user_id, chat_id), fetch=True)
     return row[0][0] if row else None
-
 def get_display_name(user_id, chat_id, default_name):
     nick = get_nickname(user_id, chat_id)
     return nick if nick else default_name
-
 def user_link_with_nick(user_id, chat_id, default_name):
     display_name = get_display_name(user_id, chat_id, default_name)
     return f'<a href="tg://user?id={user_id}">{display_name}</a>'
-
 def save_username(user: types.User):
     if user and user.username:
-        db("INSERT OR REPLACE INTO usernames (username,user_id,name) VALUES (?,?,?)",
-           (user.username.lower(), user.id, user.first_name))
-
+        db("INSERT OR REPLACE INTO usernames (username,user_id,name) VALUES (?,?,?)", (user.username.lower(), user.id, user.first_name))
 async def resolve_target(message: types.Message, args: str = ""):
     if message.reply_to_message and message.reply_to_message.from_user:
-        u = message.reply_to_message.from_user
-        return u.id, u.first_name
+        return message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
     for word in args.split():
         if word.startswith("@"):
             uname = word[1:].lower()
             r = db("SELECT user_id,name FROM usernames WHERE username=?", (uname,), fetch=True)
-            if r:
-                return r[0][0], r[0][1]
+            if r: return r[0][0], r[0][1]
             try:
                 chat = await bot.get_chat(f"@{uname}")
                 return chat.id, getattr(chat, "first_name", uname) or uname
-            except:
-                pass
+            except: pass
     return None, None
-
 async def is_admin(chat_id, user_id) -> bool:
-    if user_id == OWNER_ID:
-        return True
+    if user_id == OWNER_ID: return True
     try:
         m = await bot.get_chat_member(chat_id, user_id)
         return m.status in ("administrator", "creator")
-    except:
-        return False
-
+    except: return False
 def parse_duration(s: str) -> int:
     try:
         if s.endswith("м"): return int(s[:-1]) * 60
@@ -270,17 +213,13 @@ def parse_duration(s: str) -> int:
         if s.endswith("д"): return int(s[:-1]) * 86400
         if s.endswith("мин"): return int(s[:-3]) * 60
         return int(s) * 60
-    except:
-        return 300
-
+    except: return 300
 def fmt_dur(sec: int) -> str:
     if sec >= 86400: return f"{sec//86400} дн."
     if sec >= 3600:  return f"{sec//3600} ч."
     return f"{sec//60} мин."
-
 def get_gender_verb_suffix(gender):
     return "ёл" if gender == 0 else "ла" if gender == 1 else "ли"
-
 def process_welcome_template(template: str, name: str, mention: str, verb_suffix: str) -> str:
     result = template.replace("{name}", name).replace("{имя}", name)
     result = result.replace("{mention}", mention).replace("{упоминание}", mention)
@@ -290,68 +229,37 @@ def process_welcome_template(template: str, name: str, mention: str, verb_suffix
         replacement = "вошёл" if verb_suffix == "ёл" else "вошла" if verb_suffix == "ла" else "вошли"
         result = result.replace(match, replacement)
     return result
-
 def extract_bet(text: str):
     numbers = re.findall(r'\d+', text)
     return int(numbers[0]) if numbers else None
-
 async def get_chat_schedule(chat_id):
     row = db("SELECT close_time, open_time FROM chat_settings WHERE chat_id=?", (chat_id,), fetch=True)
     return (row[0][0], row[0][1]) if row else (None, None)
-
 async def set_chat_schedule(chat_id, close_time, open_time):
-    db("INSERT OR REPLACE INTO chat_settings (chat_id, close_time, open_time) VALUES (?,?,?)", 
-       (chat_id, close_time, open_time))
-
+    db("INSERT OR REPLACE INTO chat_settings (chat_id, close_time, open_time) VALUES (?,?,?)", (chat_id, close_time, open_time))
 async def is_chat_closed(chat_id):
     row = db("SELECT is_closed FROM chat_settings WHERE chat_id=?", (chat_id,), fetch=True)
     return row and row[0][0] == 1
-
 async def close_chat(chat_id):
     db("INSERT OR REPLACE INTO chat_settings (chat_id, is_closed) VALUES (?,?)", (chat_id, 1))
     try:
-        await bot.set_chat_permissions(
-            chat_id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_media_messages=False,
-                can_send_polls=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-                can_invite_users=True
-            )
-        )
-    except Exception as e:
-        logging.error(f"Ошибка закрытия чата: {e}")
-
+        await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False, can_add_web_page_previews=False, can_invite_users=True))
+    except Exception as e: logging.error(f"Ошибка закрытия чата: {e}")
 async def open_chat(chat_id):
     db("DELETE FROM chat_settings WHERE chat_id=?", (chat_id,))
     try:
-        await bot.set_chat_permissions(
-            chat_id,
-            permissions=ChatPermissions(
-                can_send_messages=True,
-                can_send_media_messages=True,
-                can_send_polls=True,
-                can_send_other_messages=True,
-                can_add_web_page_previews=True,
-                can_invite_users=True
-            )
-        )
-    except Exception as e:
-        logging.error(f"Ошибка открытия чата: {e}")
+        await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
+    except Exception as e: logging.error(f"Ошибка открытия чата: {e}")
 
 # ============================================================
-#  MIDDLEWARE (С АВТОМОДЕРАЦИЕЙ)
+#  MIDDLEWARE
 # ============================================================
 class MainMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message):
-            if event.from_user:
-                save_username(event.from_user)
+            if event.from_user: save_username(event.from_user)
             if event.chat and event.chat.type in ("group", "supergroup") and event.from_user:
-                uid = event.from_user.id
-                cid = event.chat.id
+                uid = event.from_user.id; cid = event.chat.id
                 if db("SELECT 1 FROM banned WHERE user_id=? AND chat_id=?", (uid, cid), fetch=True):
                     try: await event.delete()
                     except: pass
@@ -366,42 +274,30 @@ class MainMiddleware(BaseMiddleware):
                         try: await event.delete()
                         except: pass
                         return
-                # Автомодерация
                 await auto_moderate(event)
         return await handler(event, data)
-
 dp.message.middleware(MainMiddleware())
 
 # ============================================================
-#  ГЛАВНОЕ МЕНЮ И КНОПКИ
+#  ГЛАВНОЕ МЕНЮ
 # ============================================================
 def main_menu_kb(username):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="m_profile"),
-         InlineKeyboardButton(text="🏆 Топ", callback_data="m_top")],
-        [InlineKeyboardButton(text="🛒 Магазин", callback_data="m_shop"),
-         InlineKeyboardButton(text="🎮 Игры", callback_data="m_games")],
-        [InlineKeyboardButton(text="❤️ RP", callback_data="m_rp"),
-         InlineKeyboardButton(text="➕ Добавить в группу", url=f"https://t.me/{username}?startgroup=L")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="m_profile"), InlineKeyboardButton(text="🏆 Топ", callback_data="m_top")],
+        [InlineKeyboardButton(text="🛒 Магазин", callback_data="m_shop"), InlineKeyboardButton(text="🎮 Игры", callback_data="m_games")],
+        [InlineKeyboardButton(text="❤️ RP", callback_data="m_rp"), InlineKeyboardButton(text="➕ Добавить в группу", url=f"https://t.me/{username}?startgroup=L")],
     ])
-
 def back_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="m_back")]])
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     if message.chat.type == "private" and message.from_user.id != OWNER_ID:
-        return await message.reply("❌ Извините, бот только для владельца.")
+        return await message.reply("❌ Бот только для владельца.")
     me = await bot.get_me()
     if message.chat.type != "private":
         return await message.reply("✅ VOID Helper активен!\n/help — все команды.")
-    await message.answer(
-        f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
-        f"Я <b>VOID Helper</b> — бот для твоего чата.\n\n"
-        f"🎮 Игры на монеты\n💼 Экономика\n❤️ RP действия\n🛡 Модерация\n⏰ Авто-закрытие\n\n"
-        f"📋 /help — все команды",
-        reply_markup=main_menu_kb(me.username)
-    )
+    await message.answer(f"👋 Привет, {message.from_user.first_name}!\nЯ VOID Helper.\n📋 /help", reply_markup=main_menu_kb(me.username))
 
 @dp.callback_query(F.data == "m_profile")
 async def cb_profile(call: types.CallbackQuery):
@@ -410,13 +306,7 @@ async def cb_profile(call: types.CallbackQuery):
     uid = call.from_user.id
     coins, xp, warns, mult = get_user(uid)
     level = xp // 100
-    await call.message.edit_text(
-        f"👤 <b>Профиль</b>\n\n"
-        f"Имя: {user_link_with_nick(uid, call.message.chat.id, call.from_user.first_name)}\n"
-        f"⭐ Уровень: <b>{level}</b>\n💰 Монеты: <b>{coins}</b>\n"
-        f"📊 Опыт: <b>{xp}</b> / {(level+1)*100}\n⚠️ Варны: {warns}/3",
-        reply_markup=back_kb()
-    )
+    await call.message.edit_text(f"👤 Профиль\n\nИмя: {user_link_with_nick(uid, call.message.chat.id, call.from_user.first_name)}\n⭐ Уровень: {level}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "m_top")
@@ -424,13 +314,14 @@ async def cb_top(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
     rows = db("SELECT id, coins FROM users ORDER BY coins DESC LIMIT 10", fetch=True)
-    lines = ["🏆 <b>Топ монет</b>\n"]
+    if not rows:
+        await call.message.edit_text("🏆 Пока никого", reply_markup=back_kb())
+        return
     medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏆 Топ монет"]
     for i, (uid, coins) in enumerate(rows):
         m = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{m} {user_link_with_nick(uid, call.message.chat.id, '')} — {coins}💰")
-    if not rows:
-        lines.append("Пока никого")
     await call.message.edit_text("\n".join(lines), reply_markup=back_kb())
     await call.answer()
 
@@ -438,37 +329,21 @@ async def cb_top(call: types.CallbackQuery):
 async def cb_shop(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
-    await call.message.edit_text(
-        "🛒 <b>Магазин</b>\n\n1️⃣ Множитель x2 — 500💰 (1 час)\n2️⃣ Сброс работы — 300💰\n\n/buy 1  /buy 2",
-        reply_markup=back_kb()
-    )
+    await call.message.edit_text("🛒 Магазин\n1️⃣ Множитель x2 — 500💰\n2️⃣ Сброс работы — 300💰\n\n/buy 1  /buy 2", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "m_games")
 async def cb_games(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
-    await call.message.edit_text(
-        "🎮 <b>Игры</b>\n\n"
-        "/casino 100 — слоты\n/darts 100 — дартс\n/coinflip 50 — орёл/решка\n"
-        "/guess 20 — угадай число\n/rps 15 — КНБ\n\n"
-        "<b>Дуэли (ответом):</b>\n/dice, /basketball, /football, /bowling",
-        reply_markup=back_kb()
-    )
+    await call.message.edit_text("🎮 Игры\n/casino 100 — слоты\n/darts 100 — дартс\n/coinflip 50 — орёл/решка\n/guess 20 — угадай число\n/rps 15 — КНБ\n\nДуэли: /dice, /basketball, /football, /bowling (ответом)", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "m_rp")
 async def cb_rp(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
-    await call.message.edit_text(
-        "❤️ <b>RP ДЕЙСТВИЯ</b>\n\n/rp — список всех действий\n"
-        "+обнять, +поцеловать, +прижаться, +взять_за_руку, +обнять_крепко, +пошептать\n"
-        "+погладить_по_щеке, +посмотреть_в_глаза, +улыбнуться, +комплимент\n\n"
-        "💍 Браки: +брак, +развод, +пара, +список браков, +отношения\n"
-        "📛 Ники: +ник @user НовыйНик (доступно всем!)",
-        reply_markup=back_kb()
-    )
+    await call.message.edit_text("❤️ RP действия\n/rp — список\n+обнять, +поцеловать, +прижаться, +взять_за_руку и др.\n💍 Браки: +брак, +развод, +пара, +список браков, +отношения\n📛 Ники: +ник @user НовыйНик", reply_markup=back_kb())
     await call.answer()
 
 @dp.callback_query(F.data == "m_back")
@@ -476,64 +351,33 @@ async def cb_back(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
     me = await bot.get_me()
-    await call.message.edit_text(
-        f"👋 <b>Привет, {call.from_user.first_name}!</b>\n\nЯ <b>VOID Helper</b> — бот для твоего чата.",
-        reply_markup=main_menu_kb(me.username)
-    )
+    await call.message.edit_text(f"👋 Привет, {call.from_user.first_name}!\nЯ VOID Helper.", reply_markup=main_menu_kb(me.username))
     await call.answer()
 
-# ============================================================
-#  КОМАНДА /help
-# ============================================================
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
-    await message.reply("""
-📋 <b>VOID Helper — команды</b>
+    await message.reply("""📋 VOID Helper — команды
 
-👤 <b>ПРОФИЛЬ</b>
-/profile, /top
-
-💼 <b>ЭКОНОМИКА</b>
-/work, /daily, /shop
-
-🎮 <b>ИГРЫ</b>
-/casino, /darts, /coinflip, /guess, /rps
-Дуэли: /dice, /basketball, /football, /bowling
-
-❤️ <b>RP ДЕЙСТВИЯ</b>
-/rp — список
-+обнять, +поцеловать, +прижаться, +взять_за_руку
-+обнять_крепко, +пошептать, +погладить_по_щеке
-+посмотреть_в_глаза, +улыбнуться, +комплимент
-
-💍 <b>БРАКИ</b>
-+брак, +развод, +пара, +список браков, +отношения
-
-📛 <b>НИКНЕЙМЫ (доступно всем!)</b>
-+ник @user НовыйНик
-
-🔒 <b>УПРАВЛЕНИЕ</b>
--чат, +чат, /setautoschedule
-
-🛡 <b>МОДЕРАЦИЯ</b>
-!бан, !разбан, !кик, !мут, !размут, !варн, !админ, +админ, -админ
-
-⚙️ <b>НАСТРОЙКА</b>
-/setwelcome, /testwelcome
-""")
+👤 ПРОФИЛЬ: /profile, /top
+💼 ЭКОНОМИКА: /work, /daily, /shop
+🎮 ИГРЫ: /casino, /darts, /coinflip, /guess, /rps
+⚔️ ДУЭЛИ: /dice, /basketball, /football, /bowling (ответом)
+❤️ RP: /rp, +обнять, +поцеловать и др.
+💍 БРАКИ: +брак, +развод, +пара, +список браков, +отношения
+📛 НИКИ: +ник @user НовыйНик
+🔒 УПРАВЛЕНИЕ: -чат, +чат, /setautoschedule
+🛡 МОДЕРАЦИЯ: !бан, !разбан, !кик, !мут, !размут, !варн, !админ, -админ
+⚙️ НАСТРОЙКА: /setwelcome, /testwelcome""")
 
 # ============================================================
-#  ЭКОНОМИКА (СОКРАЩЕННО, НО ПОЛНОСТЬЮ РАБОТАЕТ)
+#  ЭКОНОМИКА
 # ============================================================
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
     uid = message.from_user.id
     coins, xp, warns, mult = get_user(uid)
     level = xp // 100
-    await message.reply(
-        f"👤 <b>Профиль</b>\n\nИмя: {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)}\n"
-        f"⭐ Уровень: {level}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3"
-    )
+    await message.reply(f"👤 Профиль\n\nИмя: {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)}\n⭐ Уровень: {level}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3")
 
 @dp.message(Command("top"))
 async def top_cmd(message: types.Message):
@@ -541,7 +385,7 @@ async def top_cmd(message: types.Message):
     if not rows:
         return await message.reply("🏆 Пока никого")
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["🏆 <b>Топ монет</b>"]
+    lines = ["🏆 Топ монет"]
     for i, (uid, coins) in enumerate(rows):
         m = medals[i] if i < 3 else f"{i+1}."
         lines.append(f"{m} {user_link_with_nick(uid, message.chat.id, '')} — {coins}💰")
@@ -555,20 +399,14 @@ async def work(message: types.Message):
     if now - last < 600:
         rem = 600 - (now - last)
         return await message.reply(f"⏳ Отдых {rem//60}м {rem%60}с")
-    jobs = [
-        ("💻 Написал бота", 600, 1000), ("📦 Развёз посылки", 400, 700),
-        ("🚗 Отвёз клиента", 500, 800), ("🎨 Дизайн лендинга", 450, 750),
-        ("🔧 Починил сервер", 700, 1000), ("🎮 Стрим + донаты", 300, 600),
-        ("📱 Продал айфон", 350, 650), ("🛒 Купил монеты", 200, 1200),
-        ("🤖 Обучил нейронку", 550, 950), ("🎵 Продал биты", 400, 800),
-    ]
+    jobs = [("💻 Написал бота", 600, 1000), ("📦 Развёз посылки", 400, 700), ("🚗 Отвёз клиента", 500, 800), ("🎨 Дизайн лендинга", 450, 750), ("🔧 Починил сервер", 700, 1000), ("🎮 Стрим + донаты", 300, 600), ("📱 Продал айфон", 350, 650), ("🛒 Купил монеты", 200, 1200), ("🤖 Обучил нейронку", 550, 950), ("🎵 Продал биты", 400, 800)]
     job, mn, mx = random.choice(jobs)
     pay = random.randint(mn, mx)
     xpg = random.randint(15, 35)
     add_coins(uid, pay)
-    add_xp(uid, xpg)
+    new_level = add_xp(uid, xpg)
     db("UPDATE users SET last_work=? WHERE id=?", (now, uid))
-    await message.reply(f"⛏ {job}\n💰 +{pay}💰\n✨ +{xpg} XP")
+    await message.reply(f"⛏ {job}\n💰 +{pay}💰\n✨ +{xpg} XP" + (f"\n🎉 {new_level} уровень!" if new_level else ""))
 
 @dp.message(Command("daily"))
 async def daily(message: types.Message):
@@ -580,13 +418,13 @@ async def daily(message: types.Message):
         return await message.reply(f"🎁 Бонус через {rem//3600}ч {(rem%3600)//60}м")
     bonus = random.randint(300, 700)
     add_coins(uid, bonus)
-    add_xp(uid, 50)
+    new_level = add_xp(uid, 50)
     db("UPDATE users SET last_daily=? WHERE id=?", (now, uid))
-    await message.reply(f"🎁 Бонус! +{bonus}💰 +50 XP")
+    await message.reply(f"🎁 Бонус! +{bonus}💰 +50 XP" + (f"\n🎉 {new_level} уровень!" if new_level else ""))
 
 @dp.message(Command("shop"))
 async def shop_cmd(message: types.Message):
-    await message.reply("🛒 <b>Магазин</b>\n\n1️⃣ Множитель x2 — 500💰\n2️⃣ Сброс работы — 300💰\n\n/buy 1  /buy 2")
+    await message.reply("🛒 Магазин\n1️⃣ Множитель x2 — 500💰\n2️⃣ Сброс работы — 300💰\n\n/buy 1  /buy 2")
 
 @dp.message(Command("buy"))
 async def buy_cmd(message: types.Message):
@@ -614,7 +452,6 @@ async def buy_cmd(message: types.Message):
         await message.reply("⚡ Кулдаун работы сброшен!")
     else:
         await message.reply("❌ Неверный номер. Доступно: 1, 2")
-
 async def reset_multiplier(uid, delay):
     await asyncio.sleep(delay)
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
@@ -640,25 +477,21 @@ async def casino_cmd(message: types.Message):
     if not bet:
         return await message.reply("🎰 Укажи ставку: /casino 100 или казино 100")
     uid = await check_bet(message, bet, 10)
-    if not uid:
-        return
+    if not uid: return
     msg = await bot.send_dice(message.chat.id, emoji="🎰")
     await asyncio.sleep(DICE_WAIT["🎰"])
     v = msg.dice.value
     if v == 64:
         prize = bet * 10
-        add_coins(uid, prize)
-        add_xp(uid, 150)
+        add_coins(uid, prize); add_xp(uid, 150)
         await message.reply(f"🎉 ДЖЕКПОТ! +{prize}💰 +150 XP")
     elif v >= 50:
         prize = bet * 4
-        add_coins(uid, prize)
-        add_xp(uid, 40)
+        add_coins(uid, prize); add_xp(uid, 40)
         await message.reply(f"🎰 КРУПНО! +{prize}💰 +40 XP")
     elif v >= 30:
         prize = bet * 2
-        add_coins(uid, prize)
-        add_xp(uid, 15)
+        add_coins(uid, prize); add_xp(uid, 15)
         await message.reply(f"🎰 ВЫИГРЫШ! +{prize}💰 +15 XP")
     elif v >= 15:
         add_coins(uid, bet)
@@ -672,25 +505,21 @@ async def darts_cmd(message: types.Message):
     if not bet:
         return await message.reply("🎯 Укажи ставку: /darts 100 или дартс 100")
     uid = await check_bet(message, bet, 10)
-    if not uid:
-        return
+    if not uid: return
     msg = await bot.send_dice(message.chat.id, emoji="🎯")
     await asyncio.sleep(DICE_WAIT["🎯"])
     v = msg.dice.value
     if v == 6:
         prize = bet * 5
-        add_coins(uid, prize)
-        add_xp(uid, 60)
+        add_coins(uid, prize); add_xp(uid, 60)
         await message.reply(f"🎯 БУЛЛ-АЙ! +{prize}💰 +60 XP")
     elif v == 5:
         prize = bet * 3
-        add_coins(uid, prize)
-        add_xp(uid, 30)
+        add_coins(uid, prize); add_xp(uid, 30)
         await message.reply(f"🎯 ОТЛИЧНО! +{prize}💰 +30 XP")
     elif v == 4:
         prize = bet * 2
-        add_coins(uid, prize)
-        add_xp(uid, 15)
+        add_coins(uid, prize); add_xp(uid, 15)
         await message.reply(f"🎯 ХОРОШО! +{prize}💰 +15 XP")
     elif v == 3:
         add_coins(uid, bet)
@@ -704,8 +533,7 @@ async def coinflip_cmd(message: types.Message):
     if not bet:
         return await message.reply("🪙 Укажи ставку: /coinflip 50 или монетка 50")
     uid = await check_bet(message, bet, 10)
-    if not uid:
-        return
+    if not uid: return
     result = random.choice(["орёл", "решка"])
     user_choice = random.choice(["орёл", "решка"])
     msg = await message.reply(f"🪙 Монетка летит...\n💰 Ставка: {bet}")
@@ -723,14 +551,11 @@ async def guess_cmd(message: types.Message):
     if not bet:
         return await message.reply("🔢 Укажи ставку: /guess 20 или угадай 20")
     uid = await check_bet(message, bet, 10)
-    if not uid:
-        return
+    if not uid: return
     number = random.randint(1, 10)
     await message.reply(f"🔢 Я загадал число 1-10\nНапиши число в ответ (10 сек)\n💰 Ставка: {bet}")
     try:
-        answer = await bot.wait_for("message", timeout=10.0,
-            check=lambda m: m.from_user.id == uid and m.text and m.text.isdigit() and
-                           m.reply_to_message and m.reply_to_message.message_id == message.message_id)
+        answer = await bot.wait_for("message", timeout=10.0, check=lambda m: m.from_user.id == uid and m.text and m.text.isdigit() and m.reply_to_message and m.reply_to_message.message_id == message.message_id)
         guess = int(answer.text)
         if guess == number:
             win = bet * 5
@@ -747,21 +572,16 @@ async def rps_cmd(message: types.Message):
     if not bet:
         return await message.reply("✊ Укажи ставку: /rps 15 или кнб 15")
     uid = await check_bet(message, bet, 10)
-    if not uid:
-        return
+    if not uid: return
     await message.reply("✊ Камень, ножницы или бумага?\nНапиши в ответ (15 сек)")
     try:
-        answer = await bot.wait_for("message", timeout=15.0,
-            check=lambda m: m.from_user.id == uid and m.text and m.text.lower() in ["камень", "ножницы", "бумага"] and
-                           m.reply_to_message and m.reply_to_message.message_id == message.message_id)
+        answer = await bot.wait_for("message", timeout=15.0, check=lambda m: m.from_user.id == uid and m.text and m.text.lower() in ["камень", "ножницы", "бумага"] and m.reply_to_message and m.reply_to_message.message_id == message.message_id)
         user = answer.text.lower()
         bot_choice = random.choice(["камень", "ножницы", "бумага"])
         if user == bot_choice:
             add_coins(uid, bet)
             await message.reply(f"🤝 Ничья! {bot_choice}\nВозврат {bet}💰")
-        elif (user == "камень" and bot_choice == "ножницы") or \
-             (user == "ножницы" and bot_choice == "бумага") or \
-             (user == "бумага" and bot_choice == "камень"):
+        elif (user == "камень" and bot_choice == "ножницы") or (user == "ножницы" and bot_choice == "бумага") or (user == "бумага" and bot_choice == "камень"):
             win = bet * 2
             add_coins(uid, win)
             await message.reply(f"🎉 Победа! {user} > {bot_choice}\n+{win}💰")
@@ -772,7 +592,7 @@ async def rps_cmd(message: types.Message):
         add_coins(uid, bet)
 
 # ============================================================
-#  ДУЭЛИ (С ПРИГЛАШЕНИЯМИ И АВТО-БРОСКАМИ)
+#  ДУЭЛИ (ПРИГЛАШЕНИЕ + АВТОМАТИЧЕСКИЕ БРОСКИ)
 # ============================================================
 active_duels = {}
 DUEL_GAMES = {
@@ -781,29 +601,19 @@ DUEL_GAMES = {
     "football": {"emoji": "⚽", "name": "Футбол"},
     "bowling": {"emoji": "🎳", "name": "Боулинг"},
 }
-
 def duel_invite_kb(game_type, challenger_id, chat_id):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"),
          InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]
     ])
-
 @dp.message(Command("dice"))
-async def cmd_dice(message: types.Message):
-    await start_duel_invite(message, "dice")
-
+async def cmd_dice(message: types.Message): await start_duel_invite(message, "dice")
 @dp.message(Command("basketball"))
-async def cmd_basketball(message: types.Message):
-    await start_duel_invite(message, "basketball")
-
+async def cmd_basketball(message: types.Message): await start_duel_invite(message, "basketball")
 @dp.message(Command("football"))
-async def cmd_football(message: types.Message):
-    await start_duel_invite(message, "football")
-
+async def cmd_football(message: types.Message): await start_duel_invite(message, "football")
 @dp.message(Command("bowling"))
-async def cmd_bowling(message: types.Message):
-    await start_duel_invite(message, "bowling")
-
+async def cmd_bowling(message: types.Message): await start_duel_invite(message, "bowling")
 async def start_duel_invite(message: types.Message, game_type: str):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Дуэли доступны только в группах.")
@@ -820,27 +630,12 @@ async def start_duel_invite(message: types.Message, game_type: str):
     if duel_key in active_duels:
         return await message.reply("⚠️ Вы уже вызвали этого игрока! Дождитесь ответа.")
     game = DUEL_GAMES[game_type]
-    active_duels[duel_key] = {
-        "game_type": game_type,
-        "challenger": challenger.id,
-        "opponent": opponent.id,
-        "chat_id": chat_id,
-        "status": "waiting"
-    }
-    await message.reply(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает "
-        f"{user_link_with_nick(opponent.id, chat_id, opponent.first_name)} на дуэль!\n\n"
-        f"Согласны?",
-        reply_markup=duel_invite_kb(game_type, challenger.id, chat_id)
-    )
-
+    active_duels[duel_key] = {"game_type": game_type, "challenger": challenger.id, "opponent": opponent.id, "chat_id": chat_id, "status": "waiting"}
+    await message.reply(f"{game['emoji']} <b>{game['name']}</b>\n\n{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает {user_link_with_nick(opponent.id, chat_id, opponent.first_name)} на дуэль!\n\nСогласны?", reply_markup=duel_invite_kb(game_type, challenger.id, chat_id))
 @dp.callback_query(F.data.startswith("duel_accept_"))
 async def duel_accept(call: types.CallbackQuery):
     _, _, game_type, challenger_id_str, chat_id_str = call.data.split("_")
-    challenger_id = int(challenger_id_str)
-    chat_id = int(chat_id_str)
-    opponent_id = call.from_user.id
+    challenger_id = int(challenger_id_str); chat_id = int(chat_id_str); opponent_id = call.from_user.id
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
     if duel_key not in active_duels:
         return await call.answer("❌ Вызов уже недействителен!", show_alert=True)
@@ -850,82 +645,44 @@ async def duel_accept(call: types.CallbackQuery):
     await call.message.delete()
     await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а) вызов!")
     await run_duel(chat_id, challenger_id, opponent_id, game_type)
-
 @dp.callback_query(F.data.startswith("duel_decline_"))
 async def duel_decline(call: types.CallbackQuery):
     _, _, game_type, challenger_id_str = call.data.split("_")
-    challenger_id = int(challenger_id_str)
-    opponent_id = call.from_user.id
-    chat_id = call.message.chat.id
+    challenger_id = int(challenger_id_str); opponent_id = call.from_user.id; chat_id = call.message.chat.id
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
-    if duel_key in active_duels:
-        del active_duels[duel_key]
-    await call.message.edit_text(
-        f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а) вызов на дуэль!"
-    )
+    if duel_key in active_duels: del active_duels[duel_key]
+    await call.message.edit_text(f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а) вызов на дуэль!")
     await call.answer()
-
 async def run_duel(chat_id: int, player1_id: int, player2_id: int, game_type: str):
     game = DUEL_GAMES[game_type]
-    p1 = await bot.get_chat_member(chat_id, player1_id)
-    p2 = await bot.get_chat_member(chat_id, player2_id)
-    p1_name = p1.user.first_name
-    p2_name = p2.user.first_name
-    msg = await bot.send_message(
-        chat_id,
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
-        f"🎲 Начинаем..."
-    )
+    p1 = await bot.get_chat_member(chat_id, player1_id); p2 = await bot.get_chat_member(chat_id, player2_id)
+    p1_name = p1.user.first_name; p2_name = p2.user.first_name
+    msg = await bot.send_message(chat_id, f"{game['emoji']} <b>{game['name']}</b>\n\n🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n🎲 Начинаем...")
     await asyncio.sleep(1)
-    await msg.edit_text(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
-        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
-    )
+    await msg.edit_text(f"{game['emoji']} <b>{game['name']}</b>\n\n🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает...")
     dice1 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
     score1 = dice1.dice.value
-    await msg.edit_text(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
-        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} выбросил: <b>{score1}</b>\n\n"
-        f"🎲 {user_link_with_nick(player2_id, chat_id, p2_name)} бросает..."
-    )
+    await msg.edit_text(f"{game['emoji']} <b>{game['name']}</b>\n\n🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} выбросил: <b>{score1}</b>\n\n🎲 {user_link_with_nick(player2_id, chat_id, p2_name)} бросает...")
     dice2 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
     score2 = dice2.dice.value
     if score1 > score2:
-        winner_id = player1_id
-        winner_name = p1_name
+        winner_id = player1_id; winner_name = p1_name
     elif score2 > score1:
-        winner_id = player2_id
-        winner_name = p2_name
+        winner_id = player2_id; winner_name = p2_name
     else:
         winner_id = None
     if winner_id:
-        add_coins(winner_id, 150)
-        add_xp(winner_id, 30)
-        await msg.edit_text(
-            f"{game['emoji']} <b>{game['name']}</b>\n\n"
-            f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
-            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
-            f"🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(winner_id, chat_id, winner_name)}!\n\n"
-            f"💰 +150 монет, ✨ +30 XP"
-        )
+        add_coins(winner_id, 150); add_xp(winner_id, 30)
+        await msg.edit_text(f"{game['emoji']} <b>{game['name']}</b>\n\n🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(winner_id, chat_id, winner_name)}!\n\n💰 +150 монет, ✨ +30 XP")
     else:
-        await msg.edit_text(
-            f"{game['emoji']} <b>{game['name']}</b>\n\n"
-            f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
-            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
-            f"🤝 <b>НИЧЬЯ!</b>"
-        )
+        await msg.edit_text(f"{game['emoji']} <b>{game['name']}</b>\n\n🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n🤝 <b>НИЧЬЯ!</b>")
     duel_key = f"{chat_id}_{player1_id}_{player2_id}"
-    if duel_key in active_duels:
-        del active_duels[duel_key]
+    if duel_key in active_duels: del active_duels[duel_key]
 
 # ============================================================
-#  RP ДЕЙСТВИЯ
+#  RP ДЕЙСТВИЯ (БЕЗОПАСНЫЕ)
 # ============================================================
 RP_ACTIONS = {
     "обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"],
@@ -957,12 +714,10 @@ RP_ACTIONS = {
     "улыбнуться": ["😊 улыбнулся", "😊 улыбнулась", "😊 улыбнулись"],
     "комплимент": ["💝 сделал комплимент", "💝 сделала комплимент", "💝 сделали комплимент"],
 }
-
 @dp.message(Command("rp"))
 async def rp_list_cmd(message: types.Message):
     actions = "\n".join([f"• +{k}" for k in RP_ACTIONS.keys()])
-    await message.reply(f"🎭 <b>Доступные RP действия ({len(RP_ACTIONS)}):</b>\n\n{actions}\n\nИспользование: +обнять @user")
-
+    await message.reply(f"🎭 Доступные RP действия ({len(RP_ACTIONS)}):\n\n{actions}\n\nИспользование: +обнять @user")
 @dp.message(F.text.lower().startswith(tuple(f"+{k}" for k in RP_ACTIONS.keys())))
 async def rp_action(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -970,10 +725,8 @@ async def rp_action(message: types.Message):
     action = None
     for key in RP_ACTIONS.keys():
         if message.text.lower().startswith(f"+{key}"):
-            action = key
-            break
-    if not action:
-        return
+            action = key; break
+    if not action: return
     args = message.text[len(f"+{action}"):].strip()
     target_id, target_name = await resolve_target(message, args)
     if not target_id:
@@ -983,25 +736,19 @@ async def rp_action(message: types.Message):
     gender_row = db("SELECT gender FROM user_gender WHERE user_id=?", (message.from_user.id,), fetch=True)
     gender = gender_row[0][0] if gender_row else 0
     verb = RP_ACTIONS[action][0] if gender == 0 else RP_ACTIONS[action][1] if gender == 1 else RP_ACTIONS[action][2]
-    await message.reply(
-        f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} "
-        f"{verb} "
-        f"{user_link_with_nick(target_id, message.chat.id, target_name)}!"
-    )
+    await message.reply(f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} {verb} {user_link_with_nick(target_id, message.chat.id, target_name)}!")
 
 # ============================================================
 #  БРАКИ
 # ============================================================
 async def get_marriage_info(uid, chat_id):
-    row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", 
-             (chat_id, uid, uid), fetch=True)
+    row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (chat_id, uid, uid), fetch=True)
     if row:
         u1, u2, since = row[0]
         partner = u2 if u1 == uid else u1
         days = (int(time.time()) - since) // 86400
         return partner, days
     return None, None
-
 @dp.message(F.text.lower().startswith(("+брак", "!брак", "-брак")))
 async def marry_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1015,8 +762,7 @@ async def marry_cmd(message: types.Message):
         if raw.lower().startswith(prefix):
             args = raw[len(prefix):].strip()
             break
-    else:
-        args = raw
+    else: args = raw
     target_id, target_name = await resolve_target(message, args)
     if not target_id:
         return await message.reply("❌ Укажи @юзертег или ответь.")
@@ -1029,13 +775,7 @@ async def marry_cmd(message: types.Message):
         [InlineKeyboardButton(text="💍 Принять", callback_data=f"marry_accept_{uid}_{target_id}_{message.chat.id}"),
          InlineKeyboardButton(text="❌ Отказать", callback_data=f"marry_deny_{uid}_{target_id}")]
     ])
-    await message.reply(
-        f"💍 <b>ПРЕДЛОЖЕНИЕ БРАКА</b>\n\n"
-        f"{user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} предлагает брак "
-        f"{user_link_with_nick(target_id, message.chat.id, target_name)}!\n\n❤️ Согласны?",
-        reply_markup=keyboard
-    )
-
+    await message.reply(f"💍 ПРЕДЛОЖЕНИЕ БРАКА\n\n{user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} предлагает брак {user_link_with_nick(target_id, message.chat.id, target_name)}!\n\n❤️ Согласны?", reply_markup=keyboard)
 @dp.callback_query(F.data.startswith("marry_accept_"))
 async def marry_accept(call: types.CallbackQuery):
     _, _, suitor_id, target_id, chat_id = call.data.split("_")
@@ -1047,26 +787,17 @@ async def marry_accept(call: types.CallbackQuery):
     if s_partner or t_partner:
         return await call.message.edit_text("❌ Один из вас уже в браке!")
     now = int(time.time())
-    db("INSERT INTO marriages (user1, user2, chat_id, since) VALUES (?,?,?,?)", 
-       (suitor_id, target_id, chat_id, now))
-    await call.message.edit_text(
-        f"💍 <b>ПОЗДРАВЛЯЕМ С БРАКОМ!</b> 💍\n\n"
-        f"{user_link_with_nick(suitor_id, chat_id, '')} и {user_link_with_nick(target_id, chat_id, '')} теперь муж и жена!\n\n❤️ Желаем счастья!"
-    )
+    db("INSERT INTO marriages (user1, user2, chat_id, since) VALUES (?,?,?,?)", (suitor_id, target_id, chat_id, now))
+    await call.message.edit_text(f"💍 ПОЗДРАВЛЯЕМ С БРАКОМ!\n\n{user_link_with_nick(suitor_id, chat_id, '')} и {user_link_with_nick(target_id, chat_id, '')} теперь муж и жена!\n\n❤️ Желаем счастья!")
     await call.answer()
-
 @dp.callback_query(F.data.startswith("marry_deny_"))
 async def marry_deny(call: types.CallbackQuery):
     _, _, suitor_id, target_id = call.data.split("_")
     suitor_id, target_id = int(suitor_id), int(target_id)
     if call.from_user.id != target_id:
         return await call.answer("Это предложение не вам!", show_alert=True)
-    await call.message.edit_text(
-        f"❌ <b>ОТКАЗ В БРАКЕ</b>\n\n"
-        f"{user_link_with_nick(target_id, call.message.chat.id, '')} отказал(а) {user_link_with_nick(suitor_id, call.message.chat.id, '')}."
-    )
+    await call.message.edit_text(f"❌ ОТКАЗ В БРАКЕ\n\n{user_link_with_nick(target_id, call.message.chat.id, '')} отказал(а) {user_link_with_nick(suitor_id, call.message.chat.id, '')}.")
     await call.answer()
-
 @dp.message(F.text.lower().startswith(("+развод", "!развод", "-развод")))
 async def divorce_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1076,8 +807,7 @@ async def divorce_cmd(message: types.Message):
     if not partner:
         return await message.reply("❌ Вы не в браке!")
     db("DELETE FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (message.chat.id, uid, uid))
-    await message.reply(f"💔 <b>РАЗВОД</b>\n\n{user_link_with_nick(uid, message.chat.id, '')} и {user_link_with_nick(partner, message.chat.id, '')} развелись.\n📅 Были вместе {days} дней.")
-
+    await message.reply(f"💔 РАЗВОД\n\n{user_link_with_nick(uid, message.chat.id, '')} и {user_link_with_nick(partner, message.chat.id, '')} развелись.\n📅 Были вместе {days} дней.")
 @dp.message(F.text.lower().startswith(("+пара", "!пара", "-пара")))
 async def couple_info(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1086,12 +816,7 @@ async def couple_info(message: types.Message):
     partner, days = await get_marriage_info(uid, message.chat.id)
     if not partner:
         return await message.reply("💔 Вы не в браке.\n+брак @user чтобы пожениться.")
-    await message.reply(
-        f"💑 <b>ВАША ПАРА</b>\n\n"
-        f"{user_link_with_nick(uid, message.chat.id, '')} 💕 {user_link_with_nick(partner, message.chat.id, '')}\n"
-        f"📅 Вместе: <b>{days}</b> дней"
-    )
-
+    await message.reply(f"💑 ВАША ПАРА\n\n{user_link_with_nick(uid, message.chat.id, '')} 💕 {user_link_with_nick(partner, message.chat.id, '')}\n📅 Вместе: {days} дней")
 @dp.message(F.text.lower().startswith(("+список браков", "!список браков", "-список браков")))
 async def marriages_list(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1099,12 +824,11 @@ async def marriages_list(message: types.Message):
     rows = db("SELECT user1, user2, since FROM marriages WHERE chat_id=?", (message.chat.id,), fetch=True)
     if not rows:
         return await message.reply("📋 В этом чате пока нет браков.")
-    lines = ["📋 <b>СПИСОК БРАКОВ</b>"]
+    lines = ["📋 СПИСОК БРАКОВ"]
     for u1, u2, since in rows:
         days = (int(time.time()) - since) // 86400
         lines.append(f"💑 {user_link_with_nick(u1, message.chat.id, '')} + {user_link_with_nick(u2, message.chat.id, '')} — {days} дн.")
     await message.reply("\n".join(lines))
-
 @dp.message(F.text.lower().startswith(("+отношения", "!отношения", "-отношения")))
 async def relationship_status(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1128,12 +852,10 @@ async def set_nickname(message: types.Message):
         if raw.lower().startswith(prefix):
             args = raw[len(prefix):].strip()
             break
-    else:
-        args = raw
+    else: args = raw
     if not args:
         return await message.reply("📛 Пример: +ник @user НовыйНик")
-    target_id = None
-    target_name = None
+    target_id, target_name = None, None
     if message.reply_to_message and message.reply_to_message.from_user:
         target_id = message.reply_to_message.from_user.id
         target_name = message.reply_to_message.from_user.first_name
@@ -1161,8 +883,7 @@ async def set_nickname(message: types.Message):
         return await message.reply("❌ Укажи ник!")
     if target_id != message.from_user.id and not await is_admin(message.chat.id, message.from_user.id):
         return await message.reply("❌ Ты можешь изменить ник только себе! Администраторы могут менять ники другим.")
-    db("INSERT OR REPLACE INTO user_nicknames (user_id, chat_id, nickname) VALUES (?,?,?)",
-       (target_id, message.chat.id, nickname))
+    db("INSERT OR REPLACE INTO user_nicknames (user_id, chat_id, nickname) VALUES (?,?,?)", (target_id, message.chat.id, nickname))
     await message.reply(f"✅ Ник изменён! {user_link_with_nick(target_id, message.chat.id, target_name)} теперь <b>{nickname}</b>")
 
 # ============================================================
@@ -1176,8 +897,7 @@ async def give_admin_with_confirm(message: types.Message):
         caller = await bot.get_chat_member(message.chat.id, message.from_user.id)
         if caller.status != "creator" and message.from_user.id != OWNER_ID:
             return await message.reply("❌ Выдавать права может только создатель группы.")
-    except:
-        pass
+    except: pass
     args = message.text[6:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
@@ -1186,40 +906,23 @@ async def give_admin_with_confirm(message: types.Message):
         member = await bot.get_chat_member(message.chat.id, uid)
         if member.status in ("administrator", "creator"):
             return await message.reply(f"❌ {user_link_with_nick(uid, message.chat.id, name)} уже администратор.")
-    except:
-        pass
+    except: pass
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Назначить", callback_data=f"confirm_admin_{uid}_{message.chat.id}"),
          InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_admin")]
     ])
-    await message.reply(
-        f"⚠️ Вы собираетесь назначить {user_link_with_nick(uid, message.chat.id, name)} администратором.\n"
-        f"Подтвердите действие:",
-        reply_markup=keyboard
-    )
-
+    await message.reply(f"⚠️ Вы собираетесь назначить {user_link_with_nick(uid, message.chat.id, name)} администратором.\nПодтвердите действие:", reply_markup=keyboard)
 @dp.callback_query(F.data.startswith("confirm_admin_"))
 async def confirm_admin(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
-    uid = int(uid_str)
-    chat_id = int(chat_id_str)
+    uid = int(uid_str); chat_id = int(chat_id_str)
     try:
         caller = await bot.get_chat_member(chat_id, call.from_user.id)
         if caller.status != "creator" and call.from_user.id != OWNER_ID:
             return await call.answer("❌ Только создатель может подтвердить!", show_alert=True)
-    except:
-        pass
+    except: pass
     try:
-        await bot.promote_chat_member(
-            chat_id, uid,
-            can_manage_chat=True,
-            can_delete_messages=True,
-            can_restrict_members=True,
-            can_invite_users=True,
-            can_pin_messages=True,
-            can_change_info=True,
-            can_promote_members=False
-        )
+        await bot.promote_chat_member(chat_id, uid, can_manage_chat=True, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_pin_messages=True, can_change_info=True, can_promote_members=False)
     except Exception as e:
         await call.message.edit_text(f"❌ Ошибка: {e}")
         return
@@ -1228,25 +931,17 @@ async def confirm_admin(call: types.CallbackQuery):
         [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(
-        f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\n"
-        f"Права: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\n"
-        f"Для изменения прав используйте кнопки ниже.",
-        reply_markup=keyboard
-    )
+    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nПрава: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\nДля изменения прав используйте кнопки ниже.", reply_markup=keyboard)
     await call.answer()
-
 @dp.callback_query(F.data.startswith("edit_admin_"))
 async def edit_admin_permissions(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
-    uid = int(uid_str)
-    chat_id = int(chat_id_str)
+    uid = int(uid_str); chat_id = int(chat_id_str)
     try:
         caller = await bot.get_chat_member(chat_id, call.from_user.id)
         if caller.status != "creator" and call.from_user.id != OWNER_ID:
             return await call.answer("❌ Только создатель!", show_alert=True)
-    except:
-        pass
+    except: pass
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
@@ -1254,77 +949,51 @@ async def edit_admin_permissions(call: types.CallbackQuery):
          InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(
-        f"Настройка прав для {user_link_with_nick(uid, chat_id, 'пользователя')}:\n"
-        f"Выберите действие.",
-        reply_markup=keyboard
-    )
+    await call.message.edit_text(f"Настройка прав для {user_link_with_nick(uid, chat_id, 'пользователя')}:\nВыберите действие.", reply_markup=keyboard)
     await call.answer()
-
 @dp.callback_query(F.data.startswith("perm_del_"))
 async def toggle_perm_delete(call: types.CallbackQuery):
     await call.answer("Функция в разработке (можно переключать права)", show_alert=True)
-
 @dp.callback_query(F.data.startswith("perm_ban_"))
 async def toggle_perm_ban(call: types.CallbackQuery):
     await call.answer("Функция в разработке", show_alert=True)
-
 @dp.callback_query(F.data.startswith("perm_pin_"))
 async def toggle_perm_pin(call: types.CallbackQuery):
     await call.answer("Функция в разработке", show_alert=True)
-
 @dp.callback_query(F.data.startswith("perm_info_"))
 async def toggle_perm_info(call: types.CallbackQuery):
     await call.answer("Функция в разработке", show_alert=True)
-
 @dp.callback_query(F.data.startswith("back_admin_"))
 async def back_admin(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
-    uid = int(uid_str)
-    chat_id = int(chat_id_str)
+    uid = int(uid_str); chat_id = int(chat_id_str)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(
-        f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:",
-        reply_markup=keyboard
-    )
+    await call.message.edit_text(f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:", reply_markup=keyboard)
     await call.answer()
-
 @dp.callback_query(F.data.startswith("remove_admin_"))
 async def remove_admin_from_callback(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
-    uid = int(uid_str)
-    chat_id = int(chat_id_str)
+    uid = int(uid_str); chat_id = int(chat_id_str)
     try:
         caller = await bot.get_chat_member(chat_id, call.from_user.id)
         if caller.status != "creator" and call.from_user.id != OWNER_ID:
             return await call.answer("❌ Только создатель!", show_alert=True)
-    except:
-        pass
+    except: pass
     try:
-        await bot.promote_chat_member(
-            chat_id, uid,
-            can_manage_chat=False,
-            can_delete_messages=False,
-            can_restrict_members=False,
-            can_invite_users=False,
-            can_pin_messages=False,
-            can_change_info=False,
-            can_promote_members=False
-        )
+        await bot.promote_chat_member(chat_id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
         await call.message.edit_text(f"🔻 Администратор {user_link_with_nick(uid, chat_id, '')} лишён прав.")
     except Exception as e:
         await call.message.edit_text(f"❌ Ошибка: {e}")
-
 @dp.callback_query(F.data.startswith("cancel_admin"))
 async def cancel_admin(call: types.CallbackQuery):
     await call.message.edit_text("❌ Действие отменено.")
     await call.answer()
 
 # ============================================================
-#  УПРАВЛЕНИЕ ЧАТОМ (-чат / +чат)
+#  УПРАВЛЕНИЕ ЧАТОМ (-чат / +чат / /setautoschedule)
 # ============================================================
 @dp.message(Command("setautoschedule"))
 async def set_auto_schedule(message: types.Message):
@@ -1345,7 +1014,6 @@ async def set_auto_schedule(message: types.Message):
         return await message.reply("❌ Неверный формат времени открытия")
     await set_chat_schedule(message.chat.id, close_time, open_time)
     await message.reply(f"✅ Расписание: закрытие в {close_time}, открытие в {open_time}")
-
 @dp.message(F.text.lower().startswith(("-чат", "!чат")))
 async def close_chat_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1356,11 +1024,8 @@ async def close_chat_cmd(message: types.Message):
     if await is_chat_closed(chat_id):
         return await message.reply("🔒 Чат уже закрыт!")
     await close_chat(chat_id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔓 Открыть чат", callback_data=f"open_chat_{chat_id}")]
-    ])
-    await message.reply("🔒 <b>ЧАТ ЗАКРЫТ</b>\n\nПисать могут только администраторы.", reply_markup=keyboard)
-
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔓 Открыть чат", callback_data=f"open_chat_{chat_id}")]])
+    await message.reply("🔒 ЧАТ ЗАКРЫТ\n\nПисать могут только администраторы.", reply_markup=keyboard)
 @dp.message(F.text.lower().startswith(("+чат", "!открытьчат")))
 async def open_chat_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1373,13 +1038,10 @@ async def open_chat_cmd(message: types.Message):
     await open_chat(chat_id)
     async for msg in bot.get_chat_history(chat_id, limit=10):
         if msg.from_user and msg.from_user.id == bot.id and msg.reply_markup:
-            try:
-                await msg.delete()
-            except:
-                pass
+            try: await msg.delete()
+            except: pass
             break
-    await message.reply("🔓 <b>ЧАТ ОТКРЫТ</b>\n\nВсе пользователи могут писать.")
-
+    await message.reply("🔓 ЧАТ ОТКРЫТ\n\nВсе пользователи могут писать.")
 @dp.callback_query(F.data.startswith("open_chat_"))
 async def open_chat_callback(call: types.CallbackQuery):
     chat_id = int(call.data.split("_")[2])
@@ -1388,18 +1050,15 @@ async def open_chat_callback(call: types.CallbackQuery):
     if not await is_chat_closed(chat_id):
         return await call.answer("Чат уже открыт!", show_alert=True)
     await open_chat(chat_id)
-    try:
-        await call.message.delete()
-    except:
-        pass
-    await call.message.answer("🔓 <b>ЧАТ ОТКРЫТ</b>\n\nВсе пользователи могут писать.")
+    try: await call.message.delete()
+    except: pass
+    await call.message.answer("🔓 ЧАТ ОТКРЫТ\n\nВсе пользователи могут писать.")
     await call.answer()
 
 # ============================================================
-#  АВТО-РАСПИСАНИЕ (МСК)
+#  АВТО-РАСПИСАНИЕ (МСК, ФОНОВЫЙ ПЛАНИРОВЩИК)
 # ============================================================
 sent_notifications = {}
-
 async def send_close_warning(chat_id, seconds_left):
     if seconds_left >= 3600:
         hours = seconds_left // 3600
@@ -1409,13 +1068,11 @@ async def send_close_warning(chat_id, seconds_left):
         time_str = f"{minutes} минут" + ("а" if minutes % 10 == 1 and minutes % 100 != 11 else "ы" if minutes % 10 in [2,3,4] and minutes % 100 not in [12,13,14] else "")
     else:
         time_str = f"{seconds_left} секунд"
-    await bot.send_message(chat_id, f"⚠️ <b>ВНИМАНИЕ!</b>\n\nЧат будет закрыт через <b>{time_str}</b>!")
-
+    await bot.send_message(chat_id, f"⚠️ ВНИМАНИЕ!\n\nЧат будет закрыт через {time_str}!")
 async def check_and_apply_schedule(chat_id):
     close_time, open_time = await get_chat_schedule(chat_id)
-    if not close_time or not open_time:
-        return
-    now = datetime.now(timezone(timedelta(hours=3)))
+    if not close_time or not open_time: return
+    now = datetime.now(timezone(timedelta(hours=3)))  # МСК
     current_time = now.strftime("%H:%M")
     if current_time == close_time:
         key = f"close_{chat_id}_{now.strftime('%Y%m%d')}"
@@ -1446,17 +1103,14 @@ async def check_and_apply_schedule(chat_id):
                         sent_notifications[key] = True
                         await send_close_warning(chat_id, wt)
                         break
-        except:
-            pass
-
+        except: pass
 async def scheduler_loop():
     while True:
         try:
             chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
             for chat in chats:
                 await check_and_apply_schedule(chat[0])
-        except:
-            pass
+        except: pass
         await asyncio.sleep(30)
 
 # ============================================================
@@ -1468,18 +1122,15 @@ async def on_bot_added(update: ChatMemberUpdated):
     if old in ('left','kicked') and new in ('member','administrator'):
         if update.chat.type in ('group','supergroup'):
             await bot.send_message(update.chat.id, "👋 VOID Helper здесь!\n/help — все команды.")
-
 @dp.message(F.new_chat_members)
 async def welcome_new_member(message: types.Message):
     chat_id = message.chat.id
     row = db("SELECT welcome_text FROM group_welcome WHERE chat_id=?", (chat_id,), fetch=True)
     template = row[0][0] if row else "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
     for member in message.new_chat_members:
-        if member.id == bot.id:
-            continue
+        if member.id == bot.id: continue
         gender = detect_gender_by_name(member.first_name)
-        if gender == 2:
-            gender = 0
+        if gender == 2: gender = 0
         existing = db("SELECT gender FROM user_gender WHERE user_id=?", (member.id,), fetch=True)
         if not existing:
             db("INSERT OR REPLACE INTO user_gender (user_id, gender) VALUES (?,?)", (member.id, gender))
@@ -1490,7 +1141,6 @@ async def welcome_new_member(message: types.Message):
         verb_suffix = get_gender_verb_suffix(gender)
         text = process_welcome_template(template, name, mention, verb_suffix)
         await message.answer(text)
-
 @dp.message(Command("testwelcome"))
 async def test_welcome(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1505,8 +1155,7 @@ async def test_welcome(message: types.Message):
     mention = user_link_with_nick(message.from_user.id, message.chat.id, name)
     verb_suffix = get_gender_verb_suffix(gender)
     text = process_welcome_template(template, name, mention, verb_suffix)
-    await message.reply(f"🔍 <b>Тест приветствия:</b>\n\n{text}")
-
+    await message.reply(f"🔍 Тест приветствия:\n\n{text}")
 @dp.message(Command("setwelcome"))
 async def set_welcome(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1523,22 +1172,21 @@ async def set_welcome(message: types.Message):
 #  МОДЕРАЦИЯ (ОСТАЛЬНЫЕ КОМАНДЫ)
 # ============================================================
 async def mod_guard(message):
-    if message.chat.type not in ("group", "supergroup"):
-        return False
+    if message.chat.type not in ("group", "supergroup"): return False
     if not await is_admin(message.chat.id, message.from_user.id):
         await message.reply("❌ Только для админов")
         return False
     return True
-
 @dp.message(F.text.lower().startswith(("!мут", "-мут")))
 async def mute_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     raw = message.text
     args = raw[4:].strip() if raw.startswith("!мут") else raw[4:].strip()
     dur_match = re.search(r'(\d+)(?:м|мин|ч|д)', args)
     dur_str = dur_match.group(0) if dur_match else "5м"
     user_part = re.sub(r'\d+(?:м|мин|ч|д)', '', args).strip()
+    reason = user_part.split(" ", 1)[1] if len(user_part.split(" ", 1)) > 1 else "нарушение правил"
+    user_part = user_part.split(" ", 1)[0]
     uid, name = await resolve_target(message, user_part)
     if not uid:
         return await message.reply("❌ Укажи @юзертег или ответь")
@@ -1549,33 +1197,29 @@ async def mute_cmd(message: types.Message):
     db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
     try:
         await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
-        await message.reply(f"🔇 {user_link_with_nick(uid, message.chat.id, name)} замучен на {fmt_dur(sec)}")
+        await message.reply(f"🔇 {user_link_with_nick(uid, message.chat.id, name)} замучен на {fmt_dur(sec)}.\n📌 Причина: {reason}")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
-
 @dp.message(F.text.lower().startswith(("!размут", "-размут")))
 async def unmute_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[7:].strip() if message.text.startswith("!размут") else message.text[7:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
         return await message.reply("❌ Укажи @юзертег или ответь")
     db("DELETE FROM muted WHERE user_id=? AND chat_id=?", (uid, message.chat.id))
     try:
-        await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(
-            can_send_messages=True, can_send_media_messages=True, can_send_polls=True,
-            can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
+        await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
         await message.reply(f"✅ {user_link_with_nick(uid, message.chat.id, name)} размучен")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
-
 @dp.message(F.text.lower().startswith(("!бан", "-бан")))
 async def ban_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[4:].strip() if message.text.startswith("!бан") else message.text[4:].strip()
-    uid, name = await resolve_target(message, args)
+    reason = args.split(" ", 1)[1] if len(args.split(" ", 1)) > 1 else "нарушение правил"
+    user_part = args.split(" ", 1)[0]
+    uid, name = await resolve_target(message, user_part)
     if not uid:
         return await message.reply("❌ Укажи @юзертег или ответь")
     if await is_admin(message.chat.id, uid):
@@ -1583,14 +1227,12 @@ async def ban_cmd(message: types.Message):
     db("INSERT OR IGNORE INTO banned (user_id, chat_id) VALUES (?,?)", (uid, message.chat.id))
     try:
         await bot.ban_chat_member(message.chat.id, uid)
-        await message.reply(f"🚫 {user_link_with_nick(uid, message.chat.id, name)} забанен")
+        await message.reply(f"🚫 {user_link_with_nick(uid, message.chat.id, name)} забанен.\n📌 Причина: {reason}")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
-
 @dp.message(F.text.lower().startswith(("!разбан", "-разбан")))
 async def unban_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[7:].strip() if message.text.startswith("!разбан") else message.text[7:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
@@ -1601,11 +1243,9 @@ async def unban_cmd(message: types.Message):
         await message.reply(f"✅ {user_link_with_nick(uid, message.chat.id, name)} разбанен")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
-
 @dp.message(F.text.lower().startswith(("!кик", "-кик")))
 async def kick_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[4:].strip() if message.text.startswith("!кик") else message.text[4:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
@@ -1619,11 +1259,9 @@ async def kick_cmd(message: types.Message):
         await message.reply(f"👢 {user_link_with_nick(uid, message.chat.id, name)} выгнан")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
-
 @dp.message(F.text.lower().startswith(("!варн", "-варн")))
 async def warn_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[5:].strip() if message.text.startswith("!варн") else message.text[5:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
@@ -1631,34 +1269,25 @@ async def warn_cmd(message: types.Message):
     reason = args.strip() or "нарушение"
     db("UPDATE users SET warns=warns+1 WHERE id=?", (uid,))
     warns = db("SELECT warns FROM users WHERE id=?", (uid,), fetch=True)[0][0]
-    await message.reply(f"⚠️ {user_link_with_nick(uid, message.chat.id, name)} предупреждение!\nПричина: {reason}\nВарнов: {warns}/3")
+    db("INSERT INTO warns_log (user_id, chat_id, reason, date) VALUES (?,?,?,?)", (uid, message.chat.id, reason, int(time.time())))
+    await message.reply(f"⚠️ {user_link_with_nick(uid, message.chat.id, name)} предупреждение!\n📌 Причина: {reason}\n⚠️ Всего: {warns}/3")
     if warns >= 3:
         until = int(time.time()) + 3600
         db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
         try:
             await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
             await message.reply(f"🔇 {user_link_with_nick(uid, message.chat.id, name)} получил 3 варна и замучен на 1 час")
-        except:
-            pass
+        except: pass
         db("UPDATE users SET warns=0 WHERE id=?", (uid,))
-
-@dp.message(F.text.lower().startswith(("+админ", "!админ")))  # Обратите внимание, !админ уже есть, но оставим и +админ как альтернативу
-async def give_admin_alt(message: types.Message):
-    # Дублирующий обработчик, можно оставить для совместимости, но уже есть !админ
-    pass
-
 @dp.message(F.text.lower().startswith(("-админ", "!снятьадмин")))
 async def remove_admin_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
+    if not await mod_guard(message): return
     args = message.text[6:].strip() if message.text.startswith("-админ") else message.text[9:].strip()
     uid, name = await resolve_target(message, args)
     if not uid:
         return await message.reply("❌ Укажи @юзертег или ответь")
     try:
-        await bot.promote_chat_member(message.chat.id, uid,
-            can_manage_chat=False, can_delete_messages=False, can_restrict_members=False,
-            can_invite_users=False, can_pin_messages=False, can_change_info=False)
+        await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False)
         await message.reply(f"🔻 {user_link_with_nick(uid, message.chat.id, name)} лишён прав админа")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
@@ -1668,19 +1297,13 @@ async def remove_admin_cmd(message: types.Message):
 # ============================================================
 @dp.message(F.text)
 async def text_aliases(message: types.Message):
-    if not message.text:
-        return
+    if not message.text: return
     text = message.text.strip().lower()
-    if text == "профиль":
-        return await profile(message)
-    if text == "топ":
-        return await top_cmd(message)
-    if text == "работа":
-        return await work(message)
-    if text in ["бонус", "ежедневный"]:
-        return await daily(message)
-    if text == "магазин":
-        return await shop_cmd(message)
+    if text == "профиль": return await profile(message)
+    if text == "топ": return await top_cmd(message)
+    if text == "работа": return await work(message)
+    if text in ["бонус", "ежедневный"]: return await daily(message)
+    if text == "магазин": return await shop_cmd(message)
     if text.startswith("казино"):
         bet = extract_bet(text)
         if bet:
@@ -1711,14 +1334,10 @@ async def text_aliases(message: types.Message):
             message.text = f"/rps {bet}"
             return await rps_cmd(message)
         return await message.reply("✊ Укажи ставку! Пример: кнб 15")
-    if text == "кости":
-        return await cmd_dice(message)
-    if text == "баскетбол":
-        return await cmd_basketball(message)
-    if text == "футбол":
-        return await cmd_football(message)
-    if text == "боулинг":
-        return await cmd_bowling(message)
+    if text == "кости": return await cmd_dice(message)
+    if text == "баскетбол": return await cmd_basketball(message)
+    if text == "футбол": return await cmd_football(message)
+    if text == "боулинг": return await cmd_bowling(message)
 
 # ============================================================
 #  ЗАПУСК
@@ -1727,7 +1346,6 @@ async def apply_schedule_on_startup():
     chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
     for chat in chats:
         await check_and_apply_schedule(chat[0])
-
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
