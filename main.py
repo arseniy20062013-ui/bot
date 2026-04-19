@@ -15,61 +15,22 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  НАСТРОЙКИ (ЗАМЕНИТЕ ТОЛЬКО ТОКЕН И ID!)
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  НАСТРОЙКИ (ЗАМЕНИТЕ ТОКЕН И ID ВЛАДЕЛЬЦА!)
+# ============================================================
 TOKEN    = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
 DB_NAME  = 'void_final.db'
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp  = Dispatcher()
+dp = Dispatcher()
 
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  КОМАНДЫ ДЛЯ СТРОКИ ВВОДА /
-# ════════════════════════════════════════════════════════════════════════════════
-PRIVATE_COMMANDS = [
-    BotCommand(command="start", description="🏠 Главное меню"),
-    BotCommand(command="help", description="📋 Все команды"),
-    BotCommand(command="profile", description="👤 Мой профиль"),
-    BotCommand(command="top", description="🏆 Топ игроков"),
-    BotCommand(command="work", description="⛏ Работа"),
-    BotCommand(command="daily", description="🎁 Бонус"),
-    BotCommand(command="shop", description="🛒 Магазин"),
-    BotCommand(command="casino", description="🎰 Казино"),
-    BotCommand(command="darts", description="🎯 Дартс"),
-    BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
-    BotCommand(command="guess", description="🔢 Угадай число"),
-    BotCommand(command="rps", description="✊ КНБ"),
-]
-
-GROUP_COMMANDS = [
-    BotCommand(command="help", description="📋 Все команды"),
-    BotCommand(command="profile", description="👤 Мой профиль"),
-    BotCommand(command="top", description="🏆 Топ"),
-    BotCommand(command="work", description="⛏ Работа"),
-    BotCommand(command="daily", description="🎁 Бонус"),
-    BotCommand(command="shop", description="🛒 Магазин"),
-    BotCommand(command="casino", description="🎰 Казино"),
-    BotCommand(command="darts", description="🎯 Дартс"),
-    BotCommand(command="dice", description="🎲 Кости (дуэль)"),
-    BotCommand(command="basketball", description="🏀 Баскетбол"),
-    BotCommand(command="football", description="⚽ Футбол"),
-    BotCommand(command="bowling", description="🎳 Боулинг"),
-    BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
-    BotCommand(command="guess", description="🔢 Угадай число"),
-    BotCommand(command="rps", description="✊ КНБ"),
-    BotCommand(command="setwelcome", description="✏️ Приветствие"),
-    BotCommand(command="setautoschedule", description="⏰ Настройка авто-закрытия"),
-    BotCommand(command="rp", description="🎭 Список RP действий"),
-]
-
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 #  БАЗА ДАННЫХ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 def db(query, params=(), fetch=False):
     with sqlite3.connect(DB_NAME) as conn:
         cur = conn.cursor()
@@ -133,9 +94,111 @@ db('''CREATE TABLE IF NOT EXISTS chat_settings (
     open_time TEXT
 )''')
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ (КАК IRIS)
+# ============================================================
+def detect_gender_by_name(name: str) -> int:
+    name_lower = name.lower().strip()
+    female_endings = ('а', 'я', 'ия', 'ь')
+    unisex_names = ('саша', 'женя', 'валя', 'слава', 'никита', 'вика', 'ната', 'тоня', 'саня')
+    if name_lower in unisex_names:
+        return 2
+    for ending in female_endings:
+        if name_lower.endswith(ending):
+            return 1
+    return 0
+
+# ============================================================
+#  АВТОМОДЕРАЦИЯ (ПО ПРАВИЛАМ ЧАТА)
+# ============================================================
+BAD_WORDS = {
+    'мат': [
+        'хуй', 'пизда', 'бля', 'ебать', 'ебаный', 'мудак', 'сука', 'гандон', 'пидор', 'хуесос',
+        'долбоеб', 'уебок', 'пиздец', 'ебанутый', 'залупа', 'хуйло', 'сучка', 'блядина'
+    ],
+    '18plus': [
+        'порно', 'секс', 'голый', 'голая', 'эротика', 'интим', 'пенис', 'влагалище', 'оральный',
+        'минет', 'куни', 'трах', 'ебля', 'дрочить', 'мастурбация', 'член', 'вагина', 'грудь'
+    ],
+    'insult': [
+        'тупой', 'дебил', 'идиот', 'кретин', 'лох', 'олень', 'баран', 'овца', 'дурак', 'глупый',
+        'урод', 'чмо', 'шлюха', 'проститутка'
+    ],
+    'spam': [r'http[s]?://', r'www\.', r'\.ru', r'\.com', r'\.org', r'\.net']
+}
+
+PUNISHMENT_RULES = {
+    '18plus': {'warn_days': 30, 'mute_hours': 4},
+    'insult': {'warn_days': 30, 'mute_hours': 8},
+    'spam': {'warn_days': 30, 'mute_hours': 4},
+    'мат': {'warn_days': 30, 'mute_hours': 4},
+}
+
+async def auto_moderate(message: types.Message):
+    if message.chat.type not in ("group", "supergroup"):
+        return
+    if message.from_user.is_bot:
+        return
+    if await is_admin(message.chat.id, message.from_user.id):
+        return
+
+    text = (message.text or message.caption or "").lower()
+    if not text:
+        return
+
+    violations = []
+    for word in BAD_WORDS['мат']:
+        if word in text:
+            violations.append('мат')
+            break
+    for word in BAD_WORDS['18plus']:
+        if word in text:
+            violations.append('18plus')
+            break
+    for word in BAD_WORDS['insult']:
+        if word in text:
+            violations.append('insult')
+            break
+    for pattern in BAD_WORDS['spam']:
+        if re.search(pattern, text):
+            violations.append('spam')
+            break
+
+    if not violations:
+        return
+
+    violation = violations[0]
+    rule = PUNISHMENT_RULES.get(violation, {'warn_days': 30, 'mute_hours': 4})
+
+    uid = message.from_user.id
+    db("UPDATE users SET warns = warns + 1 WHERE id=?", (uid,))
+    warns = db("SELECT warns FROM users WHERE id=?", (uid,), fetch=True)[0][0]
+
+    reason = f"Автомодерация: {violation}"
+    db("INSERT INTO warns_log (user_id, chat_id, reason, date) VALUES (?,?,?,?)",
+       (uid, message.chat.id, reason, int(time.time())))
+
+    mute_seconds = rule['mute_hours'] * 3600
+    until = int(time.time()) + mute_seconds
+    db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
+    try:
+        await bot.restrict_chat_member(
+            message.chat.id, uid,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=datetime.fromtimestamp(until, tz=timezone.utc)
+        )
+        await message.delete()
+        await message.answer(
+            f"⚠️ {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} "
+            f"нарушил(а) правила ({reason}). Выдан мут на {rule['mute_hours']} часов.",
+            delete_after=10
+        )
+    except Exception as e:
+        logging.error(f"Auto-mute error: {e}")
+
+# ============================================================
 #  ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 def get_user(uid):
     r = db("SELECT coins, xp, warns, xp_multiplier FROM users WHERE id=?", (uid,), fetch=True)
     if not r:
@@ -159,15 +222,11 @@ def add_xp(uid, amount):
 
 def get_nickname(user_id, chat_id):
     row = db("SELECT nickname FROM user_nicknames WHERE user_id=? AND chat_id=?", (user_id, chat_id), fetch=True)
-    if row and row[0][0]:
-        return row[0][0]
-    return None
+    return row[0][0] if row else None
 
 def get_display_name(user_id, chat_id, default_name):
     nick = get_nickname(user_id, chat_id)
-    if nick:
-        return nick
-    return default_name
+    return nick if nick else default_name
 
 def user_link_with_nick(user_id, chat_id, default_name):
     display_name = get_display_name(user_id, chat_id, default_name)
@@ -220,30 +279,29 @@ def fmt_dur(sec: int) -> str:
     return f"{sec//60} мин."
 
 def get_gender_verb_suffix(gender):
-    if gender == 0:
-        return "ёл"
-    elif gender == 1:
-        return "ла"
-    else:
-        return "ли"
+    return "ёл" if gender == 0 else "ла" if gender == 1 else "ли"
 
-def get_gender_verb_full(gender):
-    if gender == 0:
-        return "вошёл"
-    elif gender == 1:
-        return "вошла"
-    else:
-        return "вошли"
+def process_welcome_template(template: str, name: str, mention: str, verb_suffix: str) -> str:
+    result = template.replace("{name}", name).replace("{имя}", name)
+    result = result.replace("{mention}", mention).replace("{упоминание}", mention)
+    pattern = r'вош\{[^}]+\}'
+    matches = re.findall(pattern, result)
+    for match in matches:
+        replacement = "вошёл" if verb_suffix == "ёл" else "вошла" if verb_suffix == "ла" else "вошли"
+        result = result.replace(match, replacement)
+    return result
 
-async def get_marriage_info(uid, chat_id):
-    row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", 
-             (chat_id, uid, uid), fetch=True)
-    if row:
-        u1, u2, since = row[0]
-        partner = u2 if u1 == uid else u1
-        days = (int(time.time()) - since) // 86400
-        return partner, days
-    return None, None
+def extract_bet(text: str):
+    numbers = re.findall(r'\d+', text)
+    return int(numbers[0]) if numbers else None
+
+async def get_chat_schedule(chat_id):
+    row = db("SELECT close_time, open_time FROM chat_settings WHERE chat_id=?", (chat_id,), fetch=True)
+    return (row[0][0], row[0][1]) if row else (None, None)
+
+async def set_chat_schedule(chat_id, close_time, open_time):
+    db("INSERT OR REPLACE INTO chat_settings (chat_id, close_time, open_time) VALUES (?,?,?)", 
+       (chat_id, close_time, open_time))
 
 async def is_chat_closed(chat_id):
     row = db("SELECT is_closed FROM chat_settings WHERE chat_id=?", (chat_id,), fetch=True)
@@ -283,148 +341,40 @@ async def open_chat(chat_id):
     except Exception as e:
         logging.error(f"Ошибка открытия чата: {e}")
 
-def process_welcome_template(template: str, name: str, mention: str, verb_suffix: str) -> str:
-    result = template
-    result = result.replace("{name}", name)
-    result = result.replace("{имя}", name)
-    result = result.replace("{mention}", mention)
-    result = result.replace("{упоминание}", mention)
-    
-    pattern = r'вош\{[^}]+\}'
-    matches = re.findall(pattern, result)
-    for match in matches:
-        if verb_suffix == "ёл":
-            replacement = "вошёл"
-        elif verb_suffix == "ла":
-            replacement = "вошла"
-        else:
-            replacement = "вошли"
-        result = result.replace(match, replacement)
-    
-    return result
-
-def extract_bet(text: str):
-    numbers = re.findall(r'\d+', text)
-    if numbers:
-        return int(numbers[0])
-    return None
-
-async def get_chat_schedule(chat_id):
-    row = db("SELECT close_time, open_time FROM chat_settings WHERE chat_id=?", (chat_id,), fetch=True)
-    if row and row[0][0] and row[0][1]:
-        return row[0][0], row[0][1]
-    return None, None
-
-async def set_chat_schedule(chat_id, close_time, open_time):
-    db("INSERT OR REPLACE INTO chat_settings (chat_id, close_time, open_time) VALUES (?,?,?)", 
-       (chat_id, close_time, open_time))
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  RP ДЕЙСТВИЯ (включая 18+)
-# ════════════════════════════════════════════════════════════════════════════════
-RP_ACTIONS = {
-    # Обычные действия
-    "обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"],
-    "поцеловать": ["😘 поцеловал", "😘 поцеловала", "😘 поцеловали"],
-    "ударить": ["👊 ударил", "👊 ударила", "👊 ударили"],
-    "погладить": ["🫳 погладил", "🫳 погладила", "🫳 погладили"],
-    "кинуть_мяч": ["⚾ кинул мяч", "⚾ кинула мяч", "⚾ кинули мяч"],
-    "подарить": ["🎁 подарил", "🎁 подарила", "🎁 подарили"],
-    "угостить": ["🍪 угостил", "🍪 угостила", "🍪 угостили"],
-    "пожалеть": ["🥺 пожалел", "🥺 пожалела", "🥺 пожалели"],
-    "похвалить": ["👍 похвалил", "👍 похвалила", "👍 похвалили"],
-    "подшутить": ["😜 подшутил", "😜 подшутила", "😜 подшутили"],
-    "поздравить": ["🎉 поздравил", "🎉 поздравила", "🎉 поздравили"],
-    "извиниться": ["🙏 извинился", "🙏 извинилась", "🙏 извинились"],
-    "попросить_прощения": ["🙇 попросил прощения", "🙇 попросила прощения", "🙇 попросили прощения"],
-    "спасти": ["🦸‍♂️ спас", "🦸‍♀️ спасла", "🦸 спасли"],
-    "накормить": ["🍲 накормил", "🍲 накормила", "🍲 накормили"],
-    "напоить": ["☕ напоил", "☕ напоила", "☕ напоили"],
-    "расчесать": ["💇 расчесал", "💇 расчесала", "💇 расчесали"],
-    "помассировать": ["💆 помассировал", "💆 помассировала", "💆 помассировали"],
-    "подбодрить": ["💪 подбодрил", "💪 подбодрила", "💪 подбодрили"],
-    "поддержать": ["🤝 поддержал", "🤝 поддержала", "🤝 поддержали"],
-    "потанцевать": ["💃 потанцевал", "💃 потанцевала", "💃 потанцевали"],
-    "спеть": ["🎤 спел", "🎤 спела", "🎤 спели"],
-    "нарисовать": ["🎨 нарисовал", "🎨 нарисовала", "🎨 нарисовали"],
-    "написать_стих": ["📝 написал стих", "📝 написала стих", "📝 написали стих"],
-    "покушать": ["🍜 покушать", "🍜 покушала", "🍜 покушали"],
-    "поспать": ["😴 поспал", "😴 поспала", "😴 поспали"],
-    "погулять": ["🚶 погулял", "🚶 погуляла", "🚶 погуляли"],
-    "посмеяться": ["😂 посмеялся", "😂 посмеялась", "😂 посмеялись"],
-    "поплакать": ["😢 поплакал", "😢 поплакала", "😢 поплакали"],
-    "покричать": ["📣 покричал", "📣 покричала", "📣 покричали"],
-    "помолчать": ["🤫 помолчал", "🤫 помолчала", "🤫 помолчали"],
-    
-    # Романтические/18+ действия (в рамках приличий)
-    "прижаться": ["💕 прижался", "💕 прижалась", "💕 прижались"],
-    "взять_за_руку": ["💑 взял за руку", "💑 взяла за руку", "💑 взяли за руку"],
-    "обнять_крепко": ["🤗 крепко обнял", "🤗 крепко обняла", "🤗 крепко обняли"],
-    "пошептать": ["🤫 шепнул на ухо", "🤫 шепнула на ухо", "🤫 шепнули на ухо"],
-    "погладить_по_щеке": ["🫳 погладил по щеке", "🫳 погладила по щеке", "🫳 погладили по щеке"],
-    "посмотреть_в_глаза": ["👀 посмотрел в глаза", "👀 посмотрела в глаза", "👀 посмотрели в глаза"],
-    "улыбнуться": ["😊 улыбнулся", "😊 улыбнулась", "😊 улыбнулись"],
-    "комплимент": ["💝 сделал комплимент", "💝 сделала комплимент", "💝 сделали комплимент"],
-    "пригласить_на_свидание": ["💌 пригласил на свидание", "💌 пригласила на свидание", "💌 пригласили на свидание"],
-    "проводить_домой": ["🚶‍♂️ проводил домой", "🚶‍♀️ проводила домой", "🚶 проводили домой"],
-    "подарить_цветы": ["🌹 подарил цветы", "🌹 подарила цветы", "🌹 подарили цветы"],
-    "написать_письмо": ["✉️ написал любовное письмо", "✉️ написала любовное письмо", "✉️ написали любовное письмо"],
-    "приготовить_ужин": ["🍳 приготовил романтический ужин", "🍳 приготовила романтический ужин", "🍳 приготовили романтический ужин"],
-    "зажечь_свечи": ["🕯️ зажег свечи", "🕯️ зажгла свечи", "🕯️ зажгли свечи"],
-    "включить_музыку": ["🎵 включил романтическую музыку", "🎵 включила романтическую музыку", "🎵 включили романтическую музыку"],
-}
-
-@dp.message(Command("rp"))
-async def rp_list_cmd(message: types.Message):
-    actions_list = "\n".join([f"• +{k}" for k in RP_ACTIONS.keys()])
-    await message.reply(
-        f"🎭 <b>Доступные RP действия (всего {len(RP_ACTIONS)}):</b>\n\n"
-        f"{actions_list}\n\n"
-        f"<b>Использование:</b>\n"
-        f"+обнять @user\n"
-        f"+поцеловать (ответом на сообщение)\n\n"
-        f"💍 <b>Браки:</b>\n"
-        f"+брак @user, +развод, +пара, +список браков, +отношения\n\n"
-        f"📛 <b>Ники:</b>\n"
-        f"+ник @user НовыйНик (доступно всем!)"
-    )
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  MIDDLEWARE
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  MIDDLEWARE (С АВТОМОДЕРАЦИЕЙ)
+# ============================================================
 class MainMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message):
             if event.from_user:
                 save_username(event.from_user)
-            
             if event.chat and event.chat.type in ("group", "supergroup") and event.from_user:
                 uid = event.from_user.id
                 cid = event.chat.id
-                
                 if db("SELECT 1 FROM banned WHERE user_id=? AND chat_id=?", (uid, cid), fetch=True):
                     try: await event.delete()
                     except: pass
                     return
-                
                 row = db("SELECT until FROM muted WHERE user_id=? AND chat_id=?", (uid, cid), fetch=True)
                 if row and row[0][0] > int(time.time()):
                     try: await event.delete()
                     except: pass
                     return
-                
                 if await is_chat_closed(cid):
                     if not await is_admin(cid, uid):
                         try: await event.delete()
                         except: pass
                         return
+                # Автомодерация
+                await auto_moderate(event)
         return await handler(event, data)
 
 dp.message.middleware(MainMiddleware())
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ГЛАВНОЕ МЕНЮ /start
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  ГЛАВНОЕ МЕНЮ И КНОПКИ
+# ============================================================
 def main_menu_kb(username):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Профиль", callback_data="m_profile"),
@@ -445,7 +395,6 @@ async def start_cmd(message: types.Message):
     me = await bot.get_me()
     if message.chat.type != "private":
         return await message.reply("✅ VOID Helper активен!\n/help — все команды.")
-    
     await message.answer(
         f"👋 <b>Привет, {message.from_user.first_name}!</b>\n\n"
         f"Я <b>VOID Helper</b> — бот для твоего чата.\n\n"
@@ -512,12 +461,12 @@ async def cb_games(call: types.CallbackQuery):
 async def cb_rp(call: types.CallbackQuery):
     if call.message.chat.type == "private" and call.from_user.id != OWNER_ID:
         return await call.answer("❌ Только для владельца!", show_alert=True)
-    actions_list = "\n".join([f"• +{k}" for k in list(RP_ACTIONS.keys())[:15]])
     await call.message.edit_text(
-        f"❤️ <b>RP ДЕЙСТВИЯ ({len(RP_ACTIONS)} шт.)</b>\n\n{actions_list}\n... и ещё {len(RP_ACTIONS)-15}\n\n"
-        f"<b>Браки:</b>\n+брак, +развод, +пара, +список браков, +отношения\n\n"
-        f"<b>Ники:</b>\n+ник @user НовыйНик (доступно всем!)\n\n"
-        f"📋 Все команды: /rp",
+        "❤️ <b>RP ДЕЙСТВИЯ</b>\n\n/rp — список всех действий\n"
+        "+обнять, +поцеловать, +прижаться, +взять_за_руку, +обнять_крепко, +пошептать\n"
+        "+погладить_по_щеке, +посмотреть_в_глаза, +улыбнуться, +комплимент\n\n"
+        "💍 Браки: +брак, +развод, +пара, +список браков, +отношения\n"
+        "📛 Ники: +ник @user НовыйНик (доступно всем!)",
         reply_markup=back_kb()
     )
     await call.answer()
@@ -533,9 +482,9 @@ async def cb_back(call: types.CallbackQuery):
     )
     await call.answer()
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 #  КОМАНДА /help
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.reply("""
@@ -551,14 +500,11 @@ async def help_cmd(message: types.Message):
 /casino, /darts, /coinflip, /guess, /rps
 Дуэли: /dice, /basketball, /football, /bowling
 
-❤️ <b>RP ДЕЙСТВИЯ ({})</b>
-/rp — список всех действий
+❤️ <b>RP ДЕЙСТВИЯ</b>
+/rp — список
 +обнять, +поцеловать, +прижаться, +взять_за_руку
 +обнять_крепко, +пошептать, +погладить_по_щеке
 +посмотреть_в_глаза, +улыбнуться, +комплимент
-+пригласить_на_свидание, +проводить_домой
-+подарить_цветы, +написать_письмо
-+приготовить_ужин, +зажечь_свечи, +включить_музыку
 
 💍 <b>БРАКИ</b>
 +брак, +развод, +пара, +список браков, +отношения
@@ -570,15 +516,15 @@ async def help_cmd(message: types.Message):
 -чат, +чат, /setautoschedule
 
 🛡 <b>МОДЕРАЦИЯ</b>
-!бан, !разбан, !кик, !мут, !размут, !варн, +админ, -админ
+!бан, !разбан, !кик, !мут, !размут, !варн, !админ, +админ, -админ
 
 ⚙️ <b>НАСТРОЙКА</b>
 /setwelcome, /testwelcome
-""".format(len(RP_ACTIONS)))
+""")
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ЭКОНОМИКА
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  ЭКОНОМИКА (СОКРАЩЕННО, НО ПОЛНОСТЬЮ РАБОТАЕТ)
+# ============================================================
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
     uid = message.from_user.id
@@ -609,7 +555,6 @@ async def work(message: types.Message):
     if now - last < 600:
         rem = 600 - (now - last)
         return await message.reply(f"⏳ Отдых {rem//60}м {rem%60}с")
-    
     jobs = [
         ("💻 Написал бота", 600, 1000), ("📦 Развёз посылки", 400, 700),
         ("🚗 Отвёз клиента", 500, 800), ("🎨 Дизайн лендинга", 450, 750),
@@ -652,10 +597,8 @@ async def buy_cmd(message: types.Message):
         item = int(args[1])
     except:
         return await message.reply("❌ Некорректный номер")
-    
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
-    
     if item == 1:
         if coins < 500:
             return await message.reply(f"❌ Нужно 500💰, у тебя {coins}💰")
@@ -676,9 +619,9 @@ async def reset_multiplier(uid, delay):
     await asyncio.sleep(delay)
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ИГРЫ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  ИГРЫ (СОЛО)
+# ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
@@ -785,8 +728,8 @@ async def guess_cmd(message: types.Message):
     number = random.randint(1, 10)
     await message.reply(f"🔢 Я загадал число 1-10\nНапиши число в ответ (10 сек)\n💰 Ставка: {bet}")
     try:
-        answer = await bot.wait_for("message", timeout=10.0, 
-            check=lambda m: m.from_user.id == uid and m.text and m.text.isdigit() and 
+        answer = await bot.wait_for("message", timeout=10.0,
+            check=lambda m: m.from_user.id == uid and m.text and m.text.isdigit() and
                            m.reply_to_message and m.reply_to_message.message_id == message.message_id)
         guess = int(answer.text)
         if guess == number:
@@ -828,185 +771,245 @@ async def rps_cmd(message: types.Message):
         await message.reply("⏰ Время вышло! Ставка возвращена")
         add_coins(uid, bet)
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ДУЭЛИ
-# ════════════════════════════════════════════════════════════════════════════════
-active_games = {}
-GAME_CFG = {
-    "dice": {"emoji": "🎲", "name": "Кости", "btn": "🎲 Бросить кубик"},
-    "basketball": {"emoji": "🏀", "name": "Баскетбол", "btn": "🏀 Бросить мяч"},
-    "football": {"emoji": "⚽", "name": "Футбол", "btn": "⚽ Пробить!"},
-    "bowling": {"emoji": "🎳", "name": "Боулинг", "btn": "🎳 Бросить шар"},
+# ============================================================
+#  ДУЭЛИ (С ПРИГЛАШЕНИЯМИ И АВТО-БРОСКАМИ)
+# ============================================================
+active_duels = {}
+DUEL_GAMES = {
+    "dice": {"emoji": "🎲", "name": "Кости"},
+    "basketball": {"emoji": "🏀", "name": "Баскетбол"},
+    "football": {"emoji": "⚽", "name": "Футбол"},
+    "bowling": {"emoji": "🎳", "name": "Боулинг"},
 }
 
-def duel_kb(gtype, cid):
+def duel_invite_kb(game_type, challenger_id, chat_id):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=GAME_CFG[gtype]["btn"], callback_data=f"duel_{gtype}_{cid}")]
+        [InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"),
+         InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]
     ])
 
-async def start_duel(message: types.Message, gtype: str):
+@dp.message(Command("dice"))
+async def cmd_dice(message: types.Message):
+    await start_duel_invite(message, "dice")
+
+@dp.message(Command("basketball"))
+async def cmd_basketball(message: types.Message):
+    await start_duel_invite(message, "basketball")
+
+@dp.message(Command("football"))
+async def cmd_football(message: types.Message):
+    await start_duel_invite(message, "football")
+
+@dp.message(Command("bowling"))
+async def cmd_bowling(message: types.Message):
+    await start_duel_invite(message, "bowling")
+
+async def start_duel_invite(message: types.Message, game_type: str):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Дуэли доступны только в группах.")
     if not message.reply_to_message:
         return await message.reply("❌ Ответь на сообщение соперника командой!")
-    
-    cid = message.chat.id
-    if cid in active_games:
-        return await message.reply("⚠️ В чате уже идёт игра! Дождитесь окончания.")
-    
-    p1, p2 = message.from_user, message.reply_to_message.from_user
-    if p1.id == p2.id:
+    challenger = message.from_user
+    opponent = message.reply_to_message.from_user
+    if challenger.id == opponent.id:
         return await message.reply("❌ Нельзя играть с самим собой!")
-    if p2.is_bot:
+    if opponent.is_bot:
         return await message.reply("❌ Нельзя играть с ботом!")
-    
-    cfg = GAME_CFG[gtype]
-    active_games[cid] = {
-        "type": gtype,
-        "players": [p1.id, p2.id],
-        "names": [p1.first_name, p2.first_name],
-        "scores": [None, None],
-        "turn": 0,
+    chat_id = message.chat.id
+    duel_key = f"{chat_id}_{challenger.id}_{opponent.id}"
+    if duel_key in active_duels:
+        return await message.reply("⚠️ Вы уже вызвали этого игрока! Дождитесь ответа.")
+    game = DUEL_GAMES[game_type]
+    active_duels[duel_key] = {
+        "game_type": game_type,
+        "challenger": challenger.id,
+        "opponent": opponent.id,
+        "chat_id": chat_id,
+        "status": "waiting"
     }
-    
     await message.reply(
-        f"{cfg['emoji']} <b>{cfg['name']} — ДУЭЛЬ!</b>\n\n"
-        f"🆚 {user_link_with_nick(p1.id, cid, p1.first_name)} vs {user_link_with_nick(p2.id, cid, p2.first_name)}\n\n"
-        f"🎲 Первым ходит {user_link_with_nick(p1.id, cid, p1.first_name)}!\n\n"
-        f"⬇️ Нажми на кнопку ниже, чтобы сделать ход",
-        reply_markup=duel_kb(gtype, cid)
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает "
+        f"{user_link_with_nick(opponent.id, chat_id, opponent.first_name)} на дуэль!\n\n"
+        f"Согласны?",
+        reply_markup=duel_invite_kb(game_type, challenger.id, chat_id)
     )
 
-@dp.message(Command("dice"))
-async def cmd_dice(message: types.Message):
-    await start_duel(message, "dice")
+@dp.callback_query(F.data.startswith("duel_accept_"))
+async def duel_accept(call: types.CallbackQuery):
+    _, _, game_type, challenger_id_str, chat_id_str = call.data.split("_")
+    challenger_id = int(challenger_id_str)
+    chat_id = int(chat_id_str)
+    opponent_id = call.from_user.id
+    duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
+    if duel_key not in active_duels:
+        return await call.answer("❌ Вызов уже недействителен!", show_alert=True)
+    if active_duels[duel_key]["opponent"] != opponent_id:
+        return await call.answer("❌ Это не ваш вызов!", show_alert=True)
+    active_duels[duel_key]["status"] = "accepted"
+    await call.message.delete()
+    await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а) вызов!")
+    await run_duel(chat_id, challenger_id, opponent_id, game_type)
 
-@dp.message(Command("basketball"))
-async def cmd_basketball(message: types.Message):
-    await start_duel(message, "basketball")
-
-@dp.message(Command("football"))
-async def cmd_football(message: types.Message):
-    await start_duel(message, "football")
-
-@dp.message(Command("bowling"))
-async def cmd_bowling(message: types.Message):
-    await start_duel(message, "bowling")
-
-@dp.callback_query(F.data.startswith("duel_"))
-async def duel_roll(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    gtype = parts[1]
-    cid = int(parts[2])
-    
-    if cid not in active_games:
-        return await call.answer("Игра уже завершена!", show_alert=True)
-    
-    game = active_games[cid]
-    if game["type"] != gtype:
-        return await call.answer("Что-то пошло не так...", show_alert=True)
-    
-    turn = game["turn"]
-    if call.from_user.id != game["players"][turn]:
-        return await call.answer("Сейчас не ваш ход!", show_alert=True)
-    
+@dp.callback_query(F.data.startswith("duel_decline_"))
+async def duel_decline(call: types.CallbackQuery):
+    _, _, game_type, challenger_id_str = call.data.split("_")
+    challenger_id = int(challenger_id_str)
+    opponent_id = call.from_user.id
+    chat_id = call.message.chat.id
+    duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
+    if duel_key in active_duels:
+        del active_duels[duel_key]
+    await call.message.edit_text(
+        f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а) вызов на дуэль!"
+    )
     await call.answer()
-    emoji = GAME_CFG[gtype]["emoji"]
-    
-    dice_msg = await bot.send_dice(cid, emoji=emoji)
-    value = dice_msg.dice.value
-    game["scores"][turn] = value
-    await asyncio.sleep(DICE_WAIT[emoji])
-    
-    p0id, p1id = game["players"]
-    p0name, p1name = game["names"]
-    s0, s1 = game["scores"]
-    
-    if turn == 0:
-        game["turn"] = 1
-        await call.message.answer(
-            f"{user_link_with_nick(p0id, cid, p0name)} — <b>{s0}</b>\n\n"
-            f"🎲 Теперь ход {user_link_with_nick(p1id, cid, p1name)}!",
-            reply_markup=duel_kb(gtype, cid)
+
+async def run_duel(chat_id: int, player1_id: int, player2_id: int, game_type: str):
+    game = DUEL_GAMES[game_type]
+    p1 = await bot.get_chat_member(chat_id, player1_id)
+    p2 = await bot.get_chat_member(chat_id, player2_id)
+    p1_name = p1.user.first_name
+    p2_name = p2.user.first_name
+    msg = await bot.send_message(
+        chat_id,
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
+        f"🎲 Начинаем..."
+    )
+    await asyncio.sleep(1)
+    await msg.edit_text(
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
+        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
+    )
+    dice1 = await bot.send_dice(chat_id, emoji="🎲")
+    await asyncio.sleep(DICE_WAIT["🎲"])
+    score1 = dice1.dice.value
+    await msg.edit_text(
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
+        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} выбросил: <b>{score1}</b>\n\n"
+        f"🎲 {user_link_with_nick(player2_id, chat_id, p2_name)} бросает..."
+    )
+    dice2 = await bot.send_dice(chat_id, emoji="🎲")
+    await asyncio.sleep(DICE_WAIT["🎲"])
+    score2 = dice2.dice.value
+    if score1 > score2:
+        winner_id = player1_id
+        winner_name = p1_name
+    elif score2 > score1:
+        winner_id = player2_id
+        winner_name = p2_name
+    else:
+        winner_id = None
+    if winner_id:
+        add_coins(winner_id, 150)
+        add_xp(winner_id, 30)
+        await msg.edit_text(
+            f"{game['emoji']} <b>{game['name']}</b>\n\n"
+            f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
+            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
+            f"🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(winner_id, chat_id, winner_name)}!\n\n"
+            f"💰 +150 монет, ✨ +30 XP"
         )
     else:
-        del active_games[cid]
-        if s0 == s1:
-            await call.message.answer(
-                f"{user_link_with_nick(p0id, cid, p0name)}: <b>{s0}</b>\n"
-                f"{user_link_with_nick(p1id, cid, p1name)}: <b>{s1}</b>\n\n🤝 <b>НИЧЬЯ!</b>"
-            )
-        else:
-            wid = p0id if s0 > s1 else p1id
-            wname = p0name if s0 > s1 else p1name
-            add_coins(wid, 150)
-            add_xp(wid, 30)
-            await call.message.answer(
-                f"{user_link_with_nick(p0id, cid, p0name)}: <b>{s0}</b>\n"
-                f"{user_link_with_nick(p1id, cid, p1name)}: <b>{s1}</b>\n\n"
-                f"🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(wid, cid, wname)}!\n\n💰 +150 монет, ✨ +30 XP"
-            )
+        await msg.edit_text(
+            f"{game['emoji']} <b>{game['name']}</b>\n\n"
+            f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
+            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
+            f"🤝 <b>НИЧЬЯ!</b>"
+        )
+    duel_key = f"{chat_id}_{player1_id}_{player2_id}"
+    if duel_key in active_duels:
+        del active_duels[duel_key]
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  RP ДЕЙСТВИЯ (ОБРАБОТЧИК)
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  RP ДЕЙСТВИЯ
+# ============================================================
+RP_ACTIONS = {
+    "обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"],
+    "поцеловать": ["😘 поцеловал", "😘 поцеловала", "😘 поцеловали"],
+    "ударить": ["👊 ударил", "👊 ударила", "👊 ударили"],
+    "погладить": ["🫳 погладил", "🫳 погладила", "🫳 погладили"],
+    "кинуть_мяч": ["⚾ кинул мяч", "⚾ кинула мяч", "⚾ кинули мяч"],
+    "подарить": ["🎁 подарил", "🎁 подарила", "🎁 подарили"],
+    "угостить": ["🍪 угостил", "🍪 угостила", "🍪 угостили"],
+    "пожалеть": ["🥺 пожалел", "🥺 пожалела", "🥺 пожалели"],
+    "похвалить": ["👍 похвалил", "👍 похвалила", "👍 похвалили"],
+    "подшутить": ["😜 подшутил", "😜 подшутила", "😜 подшутили"],
+    "поздравить": ["🎉 поздравил", "🎉 поздравила", "🎉 поздравили"],
+    "извиниться": ["🙏 извинился", "🙏 извинилась", "🙏 извинились"],
+    "попросить_прощения": ["🙇 попросил прощения", "🙇 попросила прощения", "🙇 попросили прощения"],
+    "спасти": ["🦸‍♂️ спас", "🦸‍♀️ спасла", "🦸 спасли"],
+    "накормить": ["🍲 накормил", "🍲 накормила", "🍲 накормили"],
+    "напоить": ["☕ напоил", "☕ напоила", "☕ напоили"],
+    "расчесать": ["💇 расчесал", "💇 расчесала", "💇 расчесали"],
+    "помассировать": ["💆 помассировал", "💆 помассировала", "💆 помассировали"],
+    "подбодрить": ["💪 подбодрил", "💪 подбодрила", "💪 подбодрили"],
+    "поддержать": ["🤝 поддержал", "🤝 поддержала", "🤝 поддержали"],
+    "прижаться": ["💕 прижался", "💕 прижалась", "💕 прижались"],
+    "взять_за_руку": ["💑 взял за руку", "💑 взяла за руку", "💑 взяли за руку"],
+    "обнять_крепко": ["🤗 крепко обнял", "🤗 крепко обняла", "🤗 крепко обняли"],
+    "пошептать": ["🤫 шепнул на ухо", "🤫 шепнула на ухо", "🤫 шепнули на ухо"],
+    "погладить_по_щеке": ["🫳 погладил по щеке", "🫳 погладила по щеке", "🫳 погладили по щеке"],
+    "посмотреть_в_глаза": ["👀 посмотрел в глаза", "👀 посмотрела в глаза", "👀 посмотрели в глаза"],
+    "улыбнуться": ["😊 улыбнулся", "😊 улыбнулась", "😊 улыбнулись"],
+    "комплимент": ["💝 сделал комплимент", "💝 сделала комплимент", "💝 сделали комплимент"],
+}
+
+@dp.message(Command("rp"))
+async def rp_list_cmd(message: types.Message):
+    actions = "\n".join([f"• +{k}" for k in RP_ACTIONS.keys()])
+    await message.reply(f"🎭 <b>Доступные RP действия ({len(RP_ACTIONS)}):</b>\n\n{actions}\n\nИспользование: +обнять @user")
+
 @dp.message(F.text.lower().startswith(tuple(f"+{k}" for k in RP_ACTIONS.keys())))
 async def rp_action(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ RP действия доступны только в группах.")
-    
-    # Определяем действие
     action = None
     for key in RP_ACTIONS.keys():
         if message.text.lower().startswith(f"+{key}"):
             action = key
             break
-    
     if not action:
         return
-    
-    # Получаем цель
     args = message.text[len(f"+{action}"):].strip()
     target_id, target_name = await resolve_target(message, args)
-    
     if not target_id:
-        return await message.reply(f"❌ Укажи @юзертег или ответь на сообщение.\nПример: +{action} @user")
-    
+        return await message.reply(f"❌ Укажи @юзертег или ответь.\nПример: +{action} @user")
     if target_id == message.from_user.id:
         return await message.reply("❌ Нельзя выполнить действие над самим собой!")
-    
-    # Получаем пол инициатора
     gender_row = db("SELECT gender FROM user_gender WHERE user_id=?", (message.from_user.id,), fetch=True)
     gender = gender_row[0][0] if gender_row else 0
-    
-    # Выбираем правильную форму глагола
-    if gender == 0:
-        verb_form = RP_ACTIONS[action][0]
-    elif gender == 1:
-        verb_form = RP_ACTIONS[action][1]
-    else:
-        verb_form = RP_ACTIONS[action][2]
-    
-    # Отправляем сообщение
+    verb = RP_ACTIONS[action][0] if gender == 0 else RP_ACTIONS[action][1] if gender == 1 else RP_ACTIONS[action][2]
     await message.reply(
         f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} "
-        f"{verb_form} "
+        f"{verb} "
         f"{user_link_with_nick(target_id, message.chat.id, target_name)}!"
     )
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  RP — БРАКИ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  БРАКИ
+# ============================================================
+async def get_marriage_info(uid, chat_id):
+    row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", 
+             (chat_id, uid, uid), fetch=True)
+    if row:
+        u1, u2, since = row[0]
+        partner = u2 if u1 == uid else u1
+        days = (int(time.time()) - since) // 86400
+        return partner, days
+    return None, None
+
 @dp.message(F.text.lower().startswith(("+брак", "!брак", "-брак")))
 async def marry_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     uid = message.from_user.id
     partner_id, _ = await get_marriage_info(uid, message.chat.id)
     if partner_id:
         return await message.reply("❌ Вы уже в браке! +развод чтобы развестись.")
-    
     raw = message.text
     for prefix in ["+брак", "!брак", "-брак"]:
         if raw.lower().startswith(prefix):
@@ -1014,22 +1017,18 @@ async def marry_cmd(message: types.Message):
             break
     else:
         args = raw
-    
     target_id, target_name = await resolve_target(message, args)
     if not target_id:
-        return await message.reply("❌ Укажи @юзертег или ответь на сообщение.")
+        return await message.reply("❌ Укажи @юзертег или ответь.")
     if target_id == uid:
         return await message.reply("❌ Нельзя жениться на себе!")
-    
     partner_id, _ = await get_marriage_info(target_id, message.chat.id)
     if partner_id:
         return await message.reply("❌ Этот пользователь уже в браке!")
-    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💍 Принять", callback_data=f"marry_accept_{uid}_{target_id}_{message.chat.id}"),
          InlineKeyboardButton(text="❌ Отказать", callback_data=f"marry_deny_{uid}_{target_id}")]
     ])
-    
     await message.reply(
         f"💍 <b>ПРЕДЛОЖЕНИЕ БРАКА</b>\n\n"
         f"{user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} предлагает брак "
@@ -1041,19 +1040,15 @@ async def marry_cmd(message: types.Message):
 async def marry_accept(call: types.CallbackQuery):
     _, _, suitor_id, target_id, chat_id = call.data.split("_")
     suitor_id, target_id, chat_id = int(suitor_id), int(target_id), int(chat_id)
-    
     if call.from_user.id != target_id:
         return await call.answer("Это предложение не вам!", show_alert=True)
-    
     s_partner, _ = await get_marriage_info(suitor_id, chat_id)
     t_partner, _ = await get_marriage_info(target_id, chat_id)
     if s_partner or t_partner:
         return await call.message.edit_text("❌ Один из вас уже в браке!")
-    
     now = int(time.time())
     db("INSERT INTO marriages (user1, user2, chat_id, since) VALUES (?,?,?,?)", 
        (suitor_id, target_id, chat_id, now))
-    
     await call.message.edit_text(
         f"💍 <b>ПОЗДРАВЛЯЕМ С БРАКОМ!</b> 💍\n\n"
         f"{user_link_with_nick(suitor_id, chat_id, '')} и {user_link_with_nick(target_id, chat_id, '')} теперь муж и жена!\n\n❤️ Желаем счастья!"
@@ -1064,10 +1059,8 @@ async def marry_accept(call: types.CallbackQuery):
 async def marry_deny(call: types.CallbackQuery):
     _, _, suitor_id, target_id = call.data.split("_")
     suitor_id, target_id = int(suitor_id), int(target_id)
-    
     if call.from_user.id != target_id:
         return await call.answer("Это предложение не вам!", show_alert=True)
-    
     await call.message.edit_text(
         f"❌ <b>ОТКАЗ В БРАКЕ</b>\n\n"
         f"{user_link_with_nick(target_id, call.message.chat.id, '')} отказал(а) {user_link_with_nick(suitor_id, call.message.chat.id, '')}."
@@ -1078,12 +1071,10 @@ async def marry_deny(call: types.CallbackQuery):
 async def divorce_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     uid = message.from_user.id
     partner, days = await get_marriage_info(uid, message.chat.id)
     if not partner:
         return await message.reply("❌ Вы не в браке!")
-    
     db("DELETE FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (message.chat.id, uid, uid))
     await message.reply(f"💔 <b>РАЗВОД</b>\n\n{user_link_with_nick(uid, message.chat.id, '')} и {user_link_with_nick(partner, message.chat.id, '')} развелись.\n📅 Были вместе {days} дней.")
 
@@ -1091,12 +1082,10 @@ async def divorce_cmd(message: types.Message):
 async def couple_info(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     uid = message.from_user.id
     partner, days = await get_marriage_info(uid, message.chat.id)
     if not partner:
         return await message.reply("💔 Вы не в браке.\n+брак @user чтобы пожениться.")
-    
     await message.reply(
         f"💑 <b>ВАША ПАРА</b>\n\n"
         f"{user_link_with_nick(uid, message.chat.id, '')} 💕 {user_link_with_nick(partner, message.chat.id, '')}\n"
@@ -1107,11 +1096,9 @@ async def couple_info(message: types.Message):
 async def marriages_list(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     rows = db("SELECT user1, user2, since FROM marriages WHERE chat_id=?", (message.chat.id,), fetch=True)
     if not rows:
         return await message.reply("📋 В этом чате пока нет браков.")
-    
     lines = ["📋 <b>СПИСОК БРАКОВ</b>"]
     for u1, u2, since in rows:
         days = (int(time.time()) - since) // 86400
@@ -1122,7 +1109,6 @@ async def marriages_list(message: types.Message):
 async def relationship_status(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     uid = message.from_user.id
     partner, days = await get_marriage_info(uid, message.chat.id)
     if partner:
@@ -1130,14 +1116,13 @@ async def relationship_status(message: types.Message):
     else:
         await message.reply("💔 Вы холост/холоста.\n+брак @user чтобы найти пару!")
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  НИКНЕЙМЫ (ДОСТУПНО ВСЕМ!)
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  НИКНЕЙМЫ (ДОСТУПНО ВСЕМ)
+# ============================================================
 @dp.message(F.text.lower().startswith(("+ник", "!ник")))
 async def set_nickname(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
-    
     raw = message.text
     for prefix in ["+ник", "!ник"]:
         if raw.lower().startswith(prefix):
@@ -1145,13 +1130,10 @@ async def set_nickname(message: types.Message):
             break
     else:
         args = raw
-    
     if not args:
-        return await message.reply("📛 Пример: +ник @user НовыйНик\n\nТеперь ник может менять КАЖДЫЙ пользователь!")
-    
+        return await message.reply("📛 Пример: +ник @user НовыйНик")
     target_id = None
     target_name = None
-    
     if message.reply_to_message and message.reply_to_message.from_user:
         target_id = message.reply_to_message.from_user.id
         target_name = message.reply_to_message.from_user.first_name
@@ -1173,36 +1155,206 @@ async def set_nickname(message: types.Message):
             if r:
                 target_id = r[0][0]
                 target_name = r[0][1]
-    
     if not target_id:
         return await message.reply("❌ Не удалось определить пользователя.")
     if not nickname:
         return await message.reply("❌ Укажи ник!")
-    
-    # Проверяем, может ли пользователь менять ник (себе можно всегда)
-    if target_id != message.from_user.id:
-        # Проверяем, является ли пользователь админом (только админ может менять чужие ники)
-        if not await is_admin(message.chat.id, message.from_user.id):
-            return await message.reply("❌ Ты можешь изменить ник только себе! Администраторы могут менять ники другим.")
-    
+    if target_id != message.from_user.id and not await is_admin(message.chat.id, message.from_user.id):
+        return await message.reply("❌ Ты можешь изменить ник только себе! Администраторы могут менять ники другим.")
     db("INSERT OR REPLACE INTO user_nicknames (user_id, chat_id, nickname) VALUES (?,?,?)",
        (target_id, message.chat.id, nickname))
     await message.reply(f"✅ Ник изменён! {user_link_with_nick(target_id, message.chat.id, target_name)} теперь <b>{nickname}</b>")
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  УПРАВЛЕНИЕ ЧАТОМ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  КОМАНДА !АДМИН (С ПОДТВЕРЖДЕНИЕМ И КНОПКАМИ)
+# ============================================================
+@dp.message(F.text.lower().startswith("!админ"))
+async def give_admin_with_confirm(message: types.Message):
+    if message.chat.type not in ("group", "supergroup"):
+        return await message.reply("❌ Только в группах.")
+    try:
+        caller = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if caller.status != "creator" and message.from_user.id != OWNER_ID:
+            return await message.reply("❌ Выдавать права может только создатель группы.")
+    except:
+        pass
+    args = message.text[6:].strip()
+    uid, name = await resolve_target(message, args)
+    if not uid:
+        return await message.reply("❌ Укажите @юзертег или ответьте на сообщение.")
+    try:
+        member = await bot.get_chat_member(message.chat.id, uid)
+        if member.status in ("administrator", "creator"):
+            return await message.reply(f"❌ {user_link_with_nick(uid, message.chat.id, name)} уже администратор.")
+    except:
+        pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Назначить", callback_data=f"confirm_admin_{uid}_{message.chat.id}"),
+         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_admin")]
+    ])
+    await message.reply(
+        f"⚠️ Вы собираетесь назначить {user_link_with_nick(uid, message.chat.id, name)} администратором.\n"
+        f"Подтвердите действие:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query(F.data.startswith("confirm_admin_"))
+async def confirm_admin(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid = int(uid_str)
+    chat_id = int(chat_id_str)
+    try:
+        caller = await bot.get_chat_member(chat_id, call.from_user.id)
+        if caller.status != "creator" and call.from_user.id != OWNER_ID:
+            return await call.answer("❌ Только создатель может подтвердить!", show_alert=True)
+    except:
+        pass
+    try:
+        await bot.promote_chat_member(
+            chat_id, uid,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_restrict_members=True,
+            can_invite_users=True,
+            can_pin_messages=True,
+            can_change_info=True,
+            can_promote_members=False
+        )
+    except Exception as e:
+        await call.message.edit_text(f"❌ Ошибка: {e}")
+        return
+    name = (await bot.get_chat_member(chat_id, uid)).user.first_name
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
+    ])
+    await call.message.edit_text(
+        f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\n"
+        f"Права: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\n"
+        f"Для изменения прав используйте кнопки ниже.",
+        reply_markup=keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("edit_admin_"))
+async def edit_admin_permissions(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid = int(uid_str)
+    chat_id = int(chat_id_str)
+    try:
+        caller = await bot.get_chat_member(chat_id, call.from_user.id)
+        if caller.status != "creator" and call.from_user.id != OWNER_ID:
+            return await call.answer("❌ Только создатель!", show_alert=True)
+    except:
+        pass
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
+        [InlineKeyboardButton(text="📌 Закреплять", callback_data=f"perm_pin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
+    ])
+    await call.message.edit_text(
+        f"Настройка прав для {user_link_with_nick(uid, chat_id, 'пользователя')}:\n"
+        f"Выберите действие.",
+        reply_markup=keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("perm_del_"))
+async def toggle_perm_delete(call: types.CallbackQuery):
+    await call.answer("Функция в разработке (можно переключать права)", show_alert=True)
+
+@dp.callback_query(F.data.startswith("perm_ban_"))
+async def toggle_perm_ban(call: types.CallbackQuery):
+    await call.answer("Функция в разработке", show_alert=True)
+
+@dp.callback_query(F.data.startswith("perm_pin_"))
+async def toggle_perm_pin(call: types.CallbackQuery):
+    await call.answer("Функция в разработке", show_alert=True)
+
+@dp.callback_query(F.data.startswith("perm_info_"))
+async def toggle_perm_info(call: types.CallbackQuery):
+    await call.answer("Функция в разработке", show_alert=True)
+
+@dp.callback_query(F.data.startswith("back_admin_"))
+async def back_admin(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid = int(uid_str)
+    chat_id = int(chat_id_str)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
+    ])
+    await call.message.edit_text(
+        f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:",
+        reply_markup=keyboard
+    )
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("remove_admin_"))
+async def remove_admin_from_callback(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid = int(uid_str)
+    chat_id = int(chat_id_str)
+    try:
+        caller = await bot.get_chat_member(chat_id, call.from_user.id)
+        if caller.status != "creator" and call.from_user.id != OWNER_ID:
+            return await call.answer("❌ Только создатель!", show_alert=True)
+    except:
+        pass
+    try:
+        await bot.promote_chat_member(
+            chat_id, uid,
+            can_manage_chat=False,
+            can_delete_messages=False,
+            can_restrict_members=False,
+            can_invite_users=False,
+            can_pin_messages=False,
+            can_change_info=False,
+            can_promote_members=False
+        )
+        await call.message.edit_text(f"🔻 Администратор {user_link_with_nick(uid, chat_id, '')} лишён прав.")
+    except Exception as e:
+        await call.message.edit_text(f"❌ Ошибка: {e}")
+
+@dp.callback_query(F.data.startswith("cancel_admin"))
+async def cancel_admin(call: types.CallbackQuery):
+    await call.message.edit_text("❌ Действие отменено.")
+    await call.answer()
+
+# ============================================================
+#  УПРАВЛЕНИЕ ЧАТОМ (-чат / +чат)
+# ============================================================
+@dp.message(Command("setautoschedule"))
+async def set_auto_schedule(message: types.Message):
+    if message.chat.type not in ("group", "supergroup"):
+        return await message.reply("❌ Только в группах.")
+    if not await is_admin(message.chat.id, message.from_user.id):
+        return await message.reply("❌ Только для админов!")
+    args = message.text.replace("/setautoschedule", "").strip().split()
+    if len(args) < 2:
+        return await message.reply("⏰ /setautoschedule 23:00 09:00\n\nЧтобы отключить: /setautoschedule off")
+    if args[0].lower() == "off":
+        db("DELETE FROM chat_settings WHERE chat_id=?", (message.chat.id,))
+        return await message.reply("✅ Авто-закрытие отключено.")
+    close_time, open_time = args[0], args[1]
+    if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', close_time):
+        return await message.reply("❌ Неверный формат времени закрытия")
+    if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', open_time):
+        return await message.reply("❌ Неверный формат времени открытия")
+    await set_chat_schedule(message.chat.id, close_time, open_time)
+    await message.reply(f"✅ Расписание: закрытие в {close_time}, открытие в {open_time}")
+
 @dp.message(F.text.lower().startswith(("-чат", "!чат")))
 async def close_chat_cmd(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
         return await message.reply("❌ Только в группах.")
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.reply("❌ Только для админов!")
-    
     chat_id = message.chat.id
     if await is_chat_closed(chat_id):
         return await message.reply("🔒 Чат уже закрыт!")
-    
     await close_chat(chat_id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔓 Открыть чат", callback_data=f"open_chat_{chat_id}")]
@@ -1215,13 +1367,10 @@ async def open_chat_cmd(message: types.Message):
         return await message.reply("❌ Только в группах.")
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.reply("❌ Только для админов!")
-    
     chat_id = message.chat.id
     if not await is_chat_closed(chat_id):
         return await message.reply("🔓 Чат уже открыт!")
-    
     await open_chat(chat_id)
-    
     async for msg in bot.get_chat_history(chat_id, limit=10):
         if msg.from_user and msg.from_user.id == bot.id and msg.reply_markup:
             try:
@@ -1229,7 +1378,6 @@ async def open_chat_cmd(message: types.Message):
             except:
                 pass
             break
-    
     await message.reply("🔓 <b>ЧАТ ОТКРЫТ</b>\n\nВсе пользователи могут писать.")
 
 @dp.callback_query(F.data.startswith("open_chat_"))
@@ -1239,7 +1387,6 @@ async def open_chat_callback(call: types.CallbackQuery):
         return await call.answer("❌ Только для админов!", show_alert=True)
     if not await is_chat_closed(chat_id):
         return await call.answer("Чат уже открыт!", show_alert=True)
-    
     await open_chat(chat_id)
     try:
         await call.message.delete()
@@ -1248,9 +1395,73 @@ async def open_chat_callback(call: types.CallbackQuery):
     await call.message.answer("🔓 <b>ЧАТ ОТКРЫТ</b>\n\nВсе пользователи могут писать.")
     await call.answer()
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ПРИВЕТСТВИЯ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  АВТО-РАСПИСАНИЕ (МСК)
+# ============================================================
+sent_notifications = {}
+
+async def send_close_warning(chat_id, seconds_left):
+    if seconds_left >= 3600:
+        hours = seconds_left // 3600
+        time_str = f"{hours} час" + ("а" if hours % 10 == 1 and hours % 100 != 11 else "ов" if hours > 4 else "а")
+    elif seconds_left >= 60:
+        minutes = seconds_left // 60
+        time_str = f"{minutes} минут" + ("а" if minutes % 10 == 1 and minutes % 100 != 11 else "ы" if minutes % 10 in [2,3,4] and minutes % 100 not in [12,13,14] else "")
+    else:
+        time_str = f"{seconds_left} секунд"
+    await bot.send_message(chat_id, f"⚠️ <b>ВНИМАНИЕ!</b>\n\nЧат будет закрыт через <b>{time_str}</b>!")
+
+async def check_and_apply_schedule(chat_id):
+    close_time, open_time = await get_chat_schedule(chat_id)
+    if not close_time or not open_time:
+        return
+    now = datetime.now(timezone(timedelta(hours=3)))
+    current_time = now.strftime("%H:%M")
+    if current_time == close_time:
+        key = f"close_{chat_id}_{now.strftime('%Y%m%d')}"
+        if key not in sent_notifications:
+            sent_notifications[key] = True
+            if not await is_chat_closed(chat_id):
+                await close_chat(chat_id)
+                await bot.send_message(chat_id, "🔒 Чат автоматически закрыт по расписанию.")
+    if current_time == open_time:
+        key = f"open_{chat_id}_{now.strftime('%Y%m%d')}"
+        if key not in sent_notifications:
+            sent_notifications[key] = True
+            if await is_chat_closed(chat_id):
+                await open_chat(chat_id)
+                await bot.send_message(chat_id, "🔓 Чат автоматически открыт по расписанию.")
+    if not await is_chat_closed(chat_id):
+        try:
+            close_hour, close_minute = map(int, close_time.split(":"))
+            close_today = now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
+            if close_today < now:
+                close_today += timedelta(days=1)
+            seconds = (close_today - now).total_seconds()
+            warning_times = [3600, 1800, 900, 600, 300, 60, 30]
+            for wt in warning_times:
+                if wt <= seconds < wt + 10:
+                    key = f"warn_{chat_id}_{now.strftime('%Y%m%d')}_{wt}"
+                    if key not in sent_notifications:
+                        sent_notifications[key] = True
+                        await send_close_warning(chat_id, wt)
+                        break
+        except:
+            pass
+
+async def scheduler_loop():
+    while True:
+        try:
+            chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
+            for chat in chats:
+                await check_and_apply_schedule(chat[0])
+        except:
+            pass
+        await asyncio.sleep(30)
+
+# ============================================================
+#  ПРИВЕТСТВИЯ (АВТООПРЕДЕЛЕНИЕ ПОЛА)
+# ============================================================
 @dp.my_chat_member()
 async def on_bot_added(update: ChatMemberUpdated):
     old, new = update.old_chat_member.status, update.new_chat_member.status
@@ -1263,14 +1474,17 @@ async def welcome_new_member(message: types.Message):
     chat_id = message.chat.id
     row = db("SELECT welcome_text FROM group_welcome WHERE chat_id=?", (chat_id,), fetch=True)
     template = row[0][0] if row else "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
-    
     for member in message.new_chat_members:
         if member.id == bot.id:
             continue
-        
-        gender_row = db("SELECT gender FROM user_gender WHERE user_id=?", (member.id,), fetch=True)
-        gender = gender_row[0][0] if gender_row else 0
-        
+        gender = detect_gender_by_name(member.first_name)
+        if gender == 2:
+            gender = 0
+        existing = db("SELECT gender FROM user_gender WHERE user_id=?", (member.id,), fetch=True)
+        if not existing:
+            db("INSERT OR REPLACE INTO user_gender (user_id, gender) VALUES (?,?)", (member.id, gender))
+        else:
+            gender = existing[0][0]
         name = member.first_name
         mention = user_link_with_nick(member.id, chat_id, name)
         verb_suffix = get_gender_verb_suffix(gender)
@@ -1283,7 +1497,6 @@ async def test_welcome(message: types.Message):
         return await message.reply("❌ Только в группах.")
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.reply("❌ Только для админов!")
-    
     row = db("SELECT welcome_text FROM group_welcome WHERE chat_id=?", (message.chat.id,), fetch=True)
     template = row[0][0] if row else "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
     gender_row = db("SELECT gender FROM user_gender WHERE user_id=?", (message.from_user.id,), fetch=True)
@@ -1300,18 +1513,15 @@ async def set_welcome(message: types.Message):
         return await message.reply("❌ Только в группах.")
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.reply("❌ Только для админов!")
-    
     text = message.text.replace("/setwelcome", "").strip()
     if not text:
-        return await message.reply(
-            "📝 /setwelcome текст\n\nПлейсхолдеры:\n{имя} или {name}\n{упоминание} или {mention}\nвош{ла|ёл|ли}"
-        )
+        return await message.reply("📝 /setwelcome текст\n\nПлейсхолдеры:\n{имя} или {name}\n{упоминание} или {mention}\nвош{ла|ёл|ли}")
     db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text) VALUES (?,?)", (message.chat.id, text))
     await message.reply("✅ Приветствие сохранено!\n/testwelcome для проверки.")
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  МОДЕРАЦИЯ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  МОДЕРАЦИЯ (ОСТАЛЬНЫЕ КОМАНДЫ)
+# ============================================================
 async def mod_guard(message):
     if message.chat.type not in ("group", "supergroup"):
         return False
@@ -1432,21 +1642,10 @@ async def warn_cmd(message: types.Message):
             pass
         db("UPDATE users SET warns=0 WHERE id=?", (uid,))
 
-@dp.message(F.text.lower().startswith(("+админ", "!админ")))
-async def give_admin_cmd(message: types.Message):
-    if not await mod_guard(message):
-        return
-    args = message.text[6:].strip() if message.text.startswith("+админ") else message.text[6:].strip()
-    uid, name = await resolve_target(message, args)
-    if not uid:
-        return await message.reply("❌ Укажи @юзертег или ответь")
-    try:
-        await bot.promote_chat_member(message.chat.id, uid,
-            can_manage_chat=True, can_delete_messages=True, can_restrict_members=True,
-            can_invite_users=True, can_pin_messages=True, can_change_info=True)
-        await message.reply(f"⭐ {user_link_with_nick(uid, message.chat.id, name)} стал администратором")
-    except Exception as e:
-        await message.reply(f"❌ Ошибка: {e}")
+@dp.message(F.text.lower().startswith(("+админ", "!админ")))  # Обратите внимание, !админ уже есть, но оставим и +админ как альтернативу
+async def give_admin_alt(message: types.Message):
+    # Дублирующий обработчик, можно оставить для совместимости, но уже есть !админ
+    pass
 
 @dp.message(F.text.lower().startswith(("-админ", "!снятьадмин")))
 async def remove_admin_cmd(message: types.Message):
@@ -1464,15 +1663,14 @@ async def remove_admin_cmd(message: types.Message):
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  РУССКИЕ КОМАНДЫ
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
+#  РУССКИЕ КОМАНДЫ (АЛИАСЫ)
+# ============================================================
 @dp.message(F.text)
 async def text_aliases(message: types.Message):
     if not message.text:
         return
     text = message.text.strip().lower()
-    
     if text == "профиль":
         return await profile(message)
     if text == "топ":
@@ -1483,42 +1681,36 @@ async def text_aliases(message: types.Message):
         return await daily(message)
     if text == "магазин":
         return await shop_cmd(message)
-    
     if text.startswith("казино"):
         bet = extract_bet(text)
         if bet:
             message.text = f"/casino {bet}"
             return await casino_cmd(message)
         return await message.reply("🎰 Укажи ставку! Пример: казино 100")
-    
     if text.startswith("дартс"):
         bet = extract_bet(text)
         if bet:
             message.text = f"/darts {bet}"
             return await darts_cmd(message)
         return await message.reply("🎯 Укажи ставку! Пример: дартс 50")
-    
     if text.startswith("монетка"):
         bet = extract_bet(text)
         if bet:
             message.text = f"/coinflip {bet}"
             return await coinflip_cmd(message)
         return await message.reply("🪙 Укажи ставку! Пример: монетка 30")
-    
     if text.startswith("угадай"):
         bet = extract_bet(text)
         if bet:
             message.text = f"/guess {bet}"
             return await guess_cmd(message)
         return await message.reply("🔢 Укажи ставку! Пример: угадай 20")
-    
     if text.startswith("кнб") or text.startswith("камень"):
         bet = extract_bet(text)
         if bet:
             message.text = f"/rps {bet}"
             return await rps_cmd(message)
         return await message.reply("✊ Укажи ставку! Пример: кнб 15")
-    
     if text == "кости":
         return await cmd_dice(message)
     if text == "баскетбол":
@@ -1528,124 +1720,9 @@ async def text_aliases(message: types.Message):
     if text == "боулинг":
         return await cmd_bowling(message)
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  АВТО-РАСПИСАНИЕ
-# ════════════════════════════════════════════════════════════════════════════════
-sent_notifications = {}
-
-async def send_close_warning(chat_id, seconds_left):
-    if seconds_left >= 3600:
-        hours = seconds_left // 3600
-        time_str = f"{hours} час" + ("а" if hours % 10 == 1 and hours % 100 != 11 else "ов" if hours > 4 else "а")
-    elif seconds_left >= 60:
-        minutes = seconds_left // 60
-        time_str = f"{minutes} минут" + ("а" if minutes % 10 == 1 and minutes % 100 != 11 else "ы" if minutes % 10 in [2,3,4] and minutes % 100 not in [12,13,14] else "")
-    else:
-        time_str = f"{seconds_left} секунд"
-    await bot.send_message(chat_id, f"⚠️ <b>ВНИМАНИЕ!</b>\n\nЧат будет закрыт через <b>{time_str}</b>!")
-
-async def check_and_apply_schedule(chat_id):
-    close_time, open_time = await get_chat_schedule(chat_id)
-    if not close_time or not open_time:
-        return
-    now = datetime.now(timezone(timedelta(hours=3)))
-    current_time = now.strftime("%H:%M")
-    
-    if current_time == close_time:
-        key = f"close_{chat_id}_{now.strftime('%Y%m%d')}"
-        if key not in sent_notifications:
-            sent_notifications[key] = True
-            if not await is_chat_closed(chat_id):
-                await close_chat(chat_id)
-                await bot.send_message(chat_id, "🔒 Чат автоматически закрыт по расписанию.")
-    
-    if current_time == open_time:
-        key = f"open_{chat_id}_{now.strftime('%Y%m%d')}"
-        if key not in sent_notifications:
-            sent_notifications[key] = True
-            if await is_chat_closed(chat_id):
-                await open_chat(chat_id)
-                await bot.send_message(chat_id, "🔓 Чат автоматически открыт по расписанию.")
-    
-    if not await is_chat_closed(chat_id):
-        try:
-            close_hour, close_minute = map(int, close_time.split(":"))
-            close_today = now.replace(hour=close_hour, minute=close_minute, second=0, microsecond=0)
-            if close_today < now:
-                close_today += timedelta(days=1)
-            seconds = (close_today - now).total_seconds()
-            warning_times = [3600, 1800, 900, 600, 300, 60, 30]
-            for wt in warning_times:
-                if wt <= seconds < wt + 10:
-                    key = f"warn_{chat_id}_{now.strftime('%Y%m%d')}_{wt}"
-                    if key not in sent_notifications:
-                        sent_notifications[key] = True
-                        await send_close_warning(chat_id, wt)
-                        break
-        except:
-            pass
-
-async def scheduler_loop():
-    while True:
-        try:
-            chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
-            for chat in chats:
-                await check_and_apply_schedule(chat[0])
-        except:
-            pass
-        await asyncio.sleep(30)
-
-@dp.message(Command("setautoschedule"))
-async def set_auto_schedule(message: types.Message):
-    if message.chat.type not in ("group", "supergroup"):
-        return await message.reply("❌ Только в группах.")
-    if not await is_admin(message.chat.id, message.from_user.id):
-        return await message.reply("❌ Только для админов!")
-    
-    args = message.text.replace("/setautoschedule", "").strip().split()
-    if len(args) < 2:
-        return await message.reply("⏰ /setautoschedule 23:00 09:00\n\nЧтобы отключить: /setautoschedule off")
-    if args[0].lower() == "off":
-        db("DELETE FROM chat_settings WHERE chat_id=?", (message.chat.id,))
-        return await message.reply("✅ Авто-закрытие отключено.")
-    
-    close_time, open_time = args[0], args[1]
-    if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', close_time):
-        return await message.reply("❌ Неверный формат времени закрытия")
-    if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', open_time):
-        return await message.reply("❌ Неверный формат времени открытия")
-    
-    await set_chat_schedule(message.chat.id, close_time, open_time)
-    await message.reply(f"✅ Расписание: закрытие в {close_time}, открытие в {open_time}")
-
-# ════════════════════════════════════════════════════════════════════════════════
-#  КОМАНДА ДЛЯ СМЕНЫ ПОЛА
-# ════════════════════════════════════════════════════════════════════════════════
-@dp.message(Command("setgender"))
-async def set_gender_cmd(message: types.Message):
-    args = message.text.replace("/setgender", "").strip().lower()
-    if args not in ["male", "female", "муж", "жен", "м", "ж"]:
-        return await message.reply(
-            "🏳️‍🌈 <b>Смена пола</b>\n\n"
-            "Использование: /setgender male или /setgender female\n"
-            "Пример: /setgender муж\n\n"
-            "По умолчанию пол мужской."
-        )
-    
-    uid = message.from_user.id
-    if args in ["male", "муж", "м"]:
-        gender = 0
-        text = "мужской"
-    else:
-        gender = 1
-        text = "женский"
-    
-    db("INSERT OR REPLACE INTO user_gender (user_id, gender) VALUES (?,?)", (uid, gender))
-    await message.reply(f"✅ Ваш пол изменён на <b>{text}</b>!")
-
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 #  ЗАПУСК
-# ════════════════════════════════════════════════════════════════════════════════
+# ============================================================
 async def apply_schedule_on_startup():
     chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
     for chat in chats:
