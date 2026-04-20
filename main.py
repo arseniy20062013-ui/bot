@@ -142,6 +142,10 @@ db('''CREATE TABLE IF NOT EXISTS admin_permissions (
     can_pin BOOLEAN DEFAULT 1,
     can_change_info BOOLEAN DEFAULT 1,
     can_invite BOOLEAN DEFAULT 1,
+    can_promote BOOLEAN DEFAULT 0,
+    can_manage_topics BOOLEAN DEFAULT 0,
+    is_anonymous BOOLEAN DEFAULT 0,
+    can_manage_video_chats BOOLEAN DEFAULT 0,
     PRIMARY KEY(user_id, chat_id)
 )''')
 db('''CREATE TABLE IF NOT EXISTS moderation_settings (
@@ -323,16 +327,16 @@ async def open_chat(chat_id):
     except Exception as e: logging.error(f"Ошибка открытия чата {chat_id}: {e}")
 
 async def get_admin_permissions(chat_id, user_id):
-    row = db("SELECT can_delete, can_restrict, can_pin, can_change_info, can_invite FROM admin_permissions WHERE chat_id=? AND user_id=?", (chat_id, user_id), fetch=True)
+    row = db("SELECT can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats FROM admin_permissions WHERE chat_id=? AND user_id=?", (chat_id, user_id), fetch=True)
     if row:
-        return {'can_delete': bool(row[0][0]), 'can_restrict': bool(row[0][1]), 'can_pin': bool(row[0][2]), 'can_change_info': bool(row[0][3]), 'can_invite': bool(row[0][4])}
-    return {'can_delete': True, 'can_restrict': True, 'can_pin': True, 'can_change_info': True, 'can_invite': True}
+        return {'can_delete': bool(row[0][0]), 'can_restrict': bool(row[0][1]), 'can_pin': bool(row[0][2]), 'can_change_info': bool(row[0][3]), 'can_invite': bool(row[0][4]), 'can_promote': bool(row[0][5]), 'can_manage_topics': bool(row[0][6]), 'is_anonymous': bool(row[0][7]), 'can_manage_video_chats': bool(row[0][8])}
+    return {'can_delete': True, 'can_restrict': True, 'can_pin': True, 'can_change_info': True, 'can_invite': True, 'can_promote': False, 'can_manage_topics': True, 'is_anonymous': False, 'can_manage_video_chats': True}
 
 async def set_admin_permission(chat_id, user_id, perm, value):
     perms = await get_admin_permissions(chat_id, user_id)
     perms[perm] = value
-    db("INSERT OR REPLACE INTO admin_permissions (user_id, chat_id, can_delete, can_restrict, can_pin, can_change_info, can_invite) VALUES (?,?,?,?,?,?,?)",
-       (user_id, chat_id, int(perms['can_delete']), int(perms['can_restrict']), int(perms['can_pin']), int(perms['can_change_info']), int(perms['can_invite'])))
+    db("INSERT OR REPLACE INTO admin_permissions (user_id, chat_id, can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+       (user_id, chat_id, int(perms['can_delete']), int(perms['can_restrict']), int(perms['can_pin']), int(perms['can_change_info']), int(perms['can_invite']), int(perms['can_promote']), int(perms['can_manage_topics']), int(perms['is_anonymous']), int(perms['can_manage_video_chats'])))
     try:
         await bot.promote_chat_member(chat_id, user_id,
             can_manage_chat=True,
@@ -341,7 +345,10 @@ async def set_admin_permission(chat_id, user_id, perm, value):
             can_invite_users=perms['can_invite'],
             can_pin_messages=perms['can_pin'],
             can_change_info=perms['can_change_info'],
-            can_promote_members=False)
+            can_promote_members=perms['can_promote'],
+            can_manage_topics=perms['can_manage_topics'],
+            is_anonymous=perms['is_anonymous'],
+            can_manage_video_chats=perms['can_manage_video_chats'])
     except Exception as e:
         logging.error(f"Ошибка применения прав: {e}")
 
@@ -524,7 +531,7 @@ async def help_cmd(message: types.Message):
 ⚙️ НАСТРОЙКА: /setwelcome, /testwelcome""")
 
 # ============================================================
-#  ЭКОНОМИКА (СОКРАЩЕННО, НО ПОЛНОСТЬЮ РАБОТАЕТ)
+#  ЭКОНОМИКА
 # ============================================================
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
@@ -611,7 +618,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (СОЛО)
+#  ИГРЫ (СОЛО) — РАБОТАЮТ
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -1084,24 +1091,31 @@ async def confirm_admin(call: types.CallbackQuery):
             can_invite_users=True,
             can_pin_messages=True,
             can_change_info=True,
-            can_promote_members=False)
+            can_promote_members=False,
+            can_manage_topics=True,
+            is_anonymous=False,
+            can_manage_video_chats=True)
     except Exception as e:
         await call.message.edit_text(f"❌ Ошибка: {e}")
         return
     name = (await bot.get_chat_member(chat_id, uid)).user.first_name
-    # Сохраняем дефолтные права в БД
     perms = await get_admin_permissions(chat_id, uid)
-    # Создаём клавиатуру с галочками как у Iris
+    # Клавиатура как у Iris
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_promote'] else '❌'} Назначение админов", callback_data=f"perm_toggle_{uid}_{chat_id}_can_promote")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_change_info'] else '❌'} Профиль группы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_delete'] else '❌'} Удаление смс", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_restrict'] else '❌'} Баны", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_invite'] else '❌'} Инвайты", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_pin'] else '❌'} Закрепы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin"),
+         InlineKeyboardButton(text="— Трансляции", callback_data="noop"),
+         InlineKeyboardButton(text="— Анонимность", callback_data="noop")],
+        [InlineKeyboardButton(text="— Теги", callback_data="noop"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_manage_topics'] else '❌'} Управление темами", callback_data=f"perm_toggle_{uid}_{chat_id}_can_manage_topics")],
         [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nВыберите права (нажмите для переключения):", reply_markup=keyboard)
+    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nТГ-права администратора:", reply_markup=keyboard)
     await call.answer()
 
 @dp.callback_query(F.data.startswith("perm_toggle_"))
@@ -1116,14 +1130,18 @@ async def toggle_permission(call: types.CallbackQuery):
     perms = await get_admin_permissions(chat_id, uid)
     new_value = not perms[perm]
     await set_admin_permission(chat_id, uid, perm, new_value)
-    # Обновляем клавиатуру
     new_perms = await get_admin_permissions(chat_id, uid)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
-        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
-        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
-        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
-        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_promote'] else '❌'} Назначение админов", callback_data=f"perm_toggle_{uid}_{chat_id}_can_promote")],
+        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_change_info'] else '❌'} Профиль группы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info"),
+         InlineKeyboardButton(text=f"{'✔️' if new_perms['can_delete'] else '❌'} Удаление смс", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_restrict'] else '❌'} Баны", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict"),
+         InlineKeyboardButton(text=f"{'✔️' if new_perms['can_invite'] else '❌'} Инвайты", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if new_perms['can_pin'] else '❌'} Закрепы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin"),
+         InlineKeyboardButton(text="— Трансляции", callback_data="noop"),
+         InlineKeyboardButton(text="— Анонимность", callback_data="noop")],
+        [InlineKeyboardButton(text="— Теги", callback_data="noop"),
+         InlineKeyboardButton(text=f"{'✔️' if new_perms['can_manage_topics'] else '❌'} Управление темами", callback_data=f"perm_toggle_{uid}_{chat_id}_can_manage_topics")],
         [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
@@ -1147,7 +1165,10 @@ async def remove_admin_callback(call: types.CallbackQuery):
             can_invite_users=False,
             can_pin_messages=False,
             can_change_info=False,
-            can_promote_members=False)
+            can_promote_members=False,
+            can_manage_topics=False,
+            is_anonymous=False,
+            can_manage_video_chats=False)
         db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, chat_id))
         await call.message.edit_text(f"🔻 Администратор {user_link_with_nick(uid, chat_id, '')} лишён прав.")
     except Exception as e:
@@ -1164,11 +1185,16 @@ async def back_admin(call: types.CallbackQuery):
     except: pass
     perms = await get_admin_permissions(chat_id, uid)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
-        [InlineKeyboardButton(text=f"{'✔️' if perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_promote'] else '❌'} Назначение админов", callback_data=f"perm_toggle_{uid}_{chat_id}_can_promote")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_change_info'] else '❌'} Профиль группы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_delete'] else '❌'} Удаление смс", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_restrict'] else '❌'} Баны", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_invite'] else '❌'} Инвайты", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✔️' if perms['can_pin'] else '❌'} Закрепы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin"),
+         InlineKeyboardButton(text="— Трансляции", callback_data="noop"),
+         InlineKeyboardButton(text="— Анонимность", callback_data="noop")],
+        [InlineKeyboardButton(text="— Теги", callback_data="noop"),
+         InlineKeyboardButton(text=f"{'✔️' if perms['can_manage_topics'] else '❌'} Управление темами", callback_data=f"perm_toggle_{uid}_{chat_id}_can_manage_topics")],
         [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
@@ -1179,6 +1205,10 @@ async def back_admin(call: types.CallbackQuery):
 async def cancel_admin(call: types.CallbackQuery):
     await call.message.edit_text("❌ Действие отменено.")
     await call.answer()
+
+@dp.callback_query(F.data == "noop")
+async def noop_callback(call: types.CallbackQuery):
+    await call.answer("Это право пока не настраивается", show_alert=True)
 
 # ============================================================
 #  УПРАВЛЕНИЕ ЧАТОМ И МОДЕРАЦИЕЙ
@@ -1335,7 +1365,7 @@ async def set_welcome(message: types.Message):
     await message.reply("✅ Приветствие сохранено!\n/testwelcome для проверки.")
 
 # ============================================================
-#  МОДЕРАЦИЯ (ОСТАЛЬНЫЕ КОМАНДЫ)
+#  МОДЕРАЦИЯ (ОСТАЛЬНЫЕ КОМАНДЫ) — С ПОДДЕРЖКОЙ ПРИЧИНЫ
 # ============================================================
 async def mod_guard(message):
     if message.chat.type not in ("group", "supergroup"): return False
