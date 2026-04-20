@@ -816,70 +816,179 @@ async def rps_cmd(message: types.Message):
         add_coins(uid, bet)
 
 # ============================================================
-#  ДУЭЛИ
+#  ДУЭЛИ (ИСПРАВЛЕНО)
 # ============================================================
 active_duels = {}
-DUEL_GAMES = {"dice": {"emoji": "🎲", "name": "Кости"}, "basketball": {"emoji": "🏀", "name": "Баскетбол"}, "football": {"emoji": "⚽", "name": "Футбол"}, "bowling": {"emoji": "🎳", "name": "Боулинг"}}
+DUEL_GAMES = {
+    "dice": {"emoji": "🎲", "name": "Кости"}, 
+    "basketball": {"emoji": "🏀", "name": "Баскетбол"}, 
+    "football": {"emoji": "⚽", "name": "Футбол"}, 
+    "bowling": {"emoji": "🎳", "name": "Боулинг"}
+}
 
 def duel_invite_kb(game_type, challenger_id, chat_id):
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"),
+         InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]
+    ])
 
-@dp.message(Command("dice")); async def cmd_dice(m): await start_duel_invite(m, "dice")
-@dp.message(Command("basketball")); async def cmd_basketball(m): await start_duel_invite(m, "basketball")
-@dp.message(Command("football")); async def cmd_football(m): await start_duel_invite(m, "football")
-@dp.message(Command("bowling")); async def cmd_bowling(m): await start_duel_invite(m, "bowling")
+@dp.message(Command("dice"))
+async def cmd_dice(message: types.Message):
+    await start_duel_invite(message, "dice")
+
+@dp.message(Command("basketball"))
+async def cmd_basketball(message: types.Message):
+    await start_duel_invite(message, "basketball")
+
+@dp.message(Command("football"))
+async def cmd_football(message: types.Message):
+    await start_duel_invite(message, "football")
+
+@dp.message(Command("bowling"))
+async def cmd_bowling(message: types.Message):
+    await start_duel_invite(message, "bowling")
 
 async def start_duel_invite(message: types.Message, game_type: str):
-    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника!")
-    challenger, opponent = message.from_user, message.reply_to_message.from_user
-    if challenger.id == opponent.id: return await message.reply("❌ Нельзя с собой!")
-    if opponent.is_bot: return await message.reply("❌ Нельзя с ботом!")
+    if not message.reply_to_message:
+        return await message.reply("❌ Ответь на сообщение соперника!")
+    
+    challenger = message.from_user
+    opponent = message.reply_to_message.from_user
+    
+    if challenger.id == opponent.id:
+        return await message.reply("❌ Нельзя играть с самим собой!")
+    
+    if opponent.is_bot:
+        return await message.reply("❌ Нельзя играть с ботом!")
+    
     chat_id = message.chat.id
     duel_key = f"{chat_id}_{challenger.id}_{opponent.id}"
-    if duel_key in active_duels: return await message.reply("⚠️ Уже вызвали!")
+    
+    if duel_key in active_duels:
+        return await message.reply("⚠️ Вы уже вызвали этого игрока! Дождитесь ответа.")
+    
     game = DUEL_GAMES[game_type]
-    active_duels[duel_key] = {"game_type": game_type, "challenger": challenger.id, "opponent": opponent.id, "chat_id": chat_id, "status": "waiting"}
-    await message.reply(f"{game['emoji']} {game['name']}\n\n{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает {user_link_with_nick(opponent.id, chat_id, opponent.first_name)}!", reply_markup=duel_invite_kb(game_type, challenger.id, chat_id))
+    active_duels[duel_key] = {
+        "game_type": game_type, 
+        "challenger": challenger.id, 
+        "opponent": opponent.id, 
+        "chat_id": chat_id, 
+        "status": "waiting"
+    }
+    
+    await message.reply(
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает "
+        f"{user_link_with_nick(opponent.id, chat_id, opponent.first_name)} на дуэль!\n\n"
+        f"Согласны?",
+        reply_markup=duel_invite_kb(game_type, challenger.id, chat_id)
+    )
 
 @dp.callback_query(F.data.startswith("duel_accept_"))
 async def duel_accept(call: types.CallbackQuery):
-    _, _, game_type, challenger_id_str, chat_id_str = call.data.split("_")
-    challenger_id, chat_id, opponent_id = int(challenger_id_str), int(chat_id_str), call.from_user.id
+    parts = call.data.split("_")
+    game_type = parts[2]
+    challenger_id = int(parts[3])
+    chat_id = int(parts[4])
+    opponent_id = call.from_user.id
+    
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
-    if duel_key not in active_duels: return await call.answer("❌ Недействителен!", show_alert=True)
+    
+    if duel_key not in active_duels:
+        return await call.answer("❌ Вызов уже недействителен!", show_alert=True)
+    
+    if active_duels[duel_key]["opponent"] != opponent_id:
+        return await call.answer("❌ Это не ваш вызов!", show_alert=True)
+    
     active_duels[duel_key]["status"] = "accepted"
     await call.message.delete()
-    await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а)!")
+    await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а) вызов!")
     await run_duel(chat_id, challenger_id, opponent_id, game_type)
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("duel_decline_"))
 async def duel_decline(call: types.CallbackQuery):
-    _, _, game_type, challenger_id_str = call.data.split("_")
-    challenger_id, opponent_id, chat_id = int(challenger_id_str), call.from_user.id, call.message.chat.id
+    parts = call.data.split("_")
+    game_type = parts[2]
+    challenger_id = int(parts[3])
+    opponent_id = call.from_user.id
+    chat_id = call.message.chat.id
+    
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
-    if duel_key in active_duels: del active_duels[duel_key]
-    await call.message.edit_text(f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а)!")
+    if duel_key in active_duels:
+        del active_duels[duel_key]
+    
+    await call.message.edit_text(
+        f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а) вызов на дуэль!"
+    )
+    await call.answer()
 
-async def run_duel(chat_id, p1, p2, game_type):
+async def run_duel(chat_id: int, player1_id: int, player2_id: int, game_type: str):
     game = DUEL_GAMES[game_type]
-    p1m, p2m = await bot.get_chat_member(chat_id, p1), await bot.get_chat_member(chat_id, p2)
-    p1n, p2n = p1m.user.first_name, p2m.user.first_name
-    msg = await bot.send_message(chat_id, f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)} vs {user_link_with_nick(p2, chat_id, p2n)}\n\n🎲 {user_link_with_nick(p1, chat_id, p1n)} бросает...")
-    d1 = await bot.send_dice(chat_id, emoji="🎲")
+    p1 = await bot.get_chat_member(chat_id, player1_id)
+    p2 = await bot.get_chat_member(chat_id, player2_id)
+    p1_name = p1.user.first_name
+    p2_name = p2.user.first_name
+    
+    msg = await bot.send_message(
+        chat_id,
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
+        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
+    )
+    
+    await asyncio.sleep(1)
+    await msg.edit_text(
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
+        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
+    )
+    
+    dice1 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
-    s1 = d1.dice.value
-    await msg.edit_text(f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)}: {s1}\n{user_link_with_nick(p2, chat_id, p2n)} бросает...")
-    d2 = await bot.send_dice(chat_id, emoji="🎲")
+    score1 = dice1.dice.value
+    
+    await msg.edit_text(
+        f"{game['emoji']} <b>{game['name']}</b>\n\n"
+        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
+        f"🎲 {user_link_with_nick(player2_id, chat_id, p2_name)} бросает..."
+    )
+    
+    dice2 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
-    s2 = d2.dice.value
-    if s1 > s2: w_id, w_name = p1, p1n
-    elif s2 > s1: w_id, w_name = p2, p2n
-    else: w_id = None
-    if w_id:
-        add_coins(w_id, 150); add_xp(w_id, 30)
-        await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🏆 Победитель: {user_link_with_nick(w_id, chat_id, w_name)}!\n💰 +150, ✨ +30 XP")
-    else: await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🤝 НИЧЬЯ!")
-    if f"{chat_id}_{p1}_{p2}" in active_duels: del active_duels[f"{chat_id}_{p1}_{p2}"]
+    score2 = dice2.dice.value
+    
+    if score1 > score2:
+        winner_id = player1_id
+        winner_name = p1_name
+    elif score2 > score1:
+        winner_id = player2_id
+        winner_name = p2_name
+    else:
+        winner_id = None
+    
+    if winner_id:
+        add_coins(winner_id, 150)
+        add_xp(winner_id, 30)
+        await msg.edit_text(
+            f"{game['emoji']} <b>{game['name']}</b>\n\n"
+            f"{user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
+            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
+            f"🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(winner_id, chat_id, winner_name)}!\n"
+            f"💰 +150 монет, ✨ +30 XP"
+        )
+    else:
+        await msg.edit_text(
+            f"{game['emoji']} <b>{game['name']}</b>\n\n"
+            f"{user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
+            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
+            f"🤝 <b>НИЧЬЯ!</b>"
+        )
+    
+    duel_key = f"{chat_id}_{player1_id}_{player2_id}"
+    if duel_key in active_duels:
+        del active_duels[duel_key]
+
 
 # ============================================================
 #  RP ДЕЙСТВИЯ
