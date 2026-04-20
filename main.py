@@ -353,7 +353,7 @@ async def set_admin_permission(chat_id, user_id, perm, value):
         logging.error(f"Ошибка применения прав: {e}")
 
 # ============================================================
-#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК)
+#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК) — ИСПРАВЛЕНО
 # ============================================================
 sent_notifications = {}
 
@@ -368,25 +368,36 @@ async def apply_schedule_now(chat_id):
     now_minutes = now.hour * 60 + now.minute
     close_minutes = int(close_time[:2]) * 60 + int(close_time[3:])
     open_minutes = int(open_time[:2]) * 60 + int(open_time[3:])
+    
+    # Определяем, должен ли чат быть закрыт в текущий момент
     if close_minutes < open_minutes:
         should_be_closed = (close_minutes <= now_minutes < open_minutes)
     else:
         should_be_closed = (now_minutes >= close_minutes or now_minutes < open_minutes)
+    
     is_closed = await is_chat_closed(chat_id)
+    
+    # Закрытие
     if should_be_closed and not is_closed:
         await close_chat(chat_id)
         await bot.send_message(chat_id, "🔒 Чат автоматически закрыт по расписанию.")
+        logging.info(f"Чат {chat_id} закрыт по расписанию в {now.strftime('%H:%M')}")
+    # Открытие
     elif not should_be_closed and is_closed:
         await open_chat(chat_id)
         await bot.send_message(chat_id, "🔓 Чат автоматически открыт по расписанию.")
+        logging.info(f"Чат {chat_id} открыт по расписанию в {now.strftime('%H:%M')}")
+    
+    # Отправка предупреждений (только если чат открыт и до закрытия осталось меньше warning_time)
     if not should_be_closed and not is_closed:
+        # Время до следующего закрытия
         if close_minutes > now_minutes:
             seconds_until = (close_minutes - now_minutes) * 60
         else:
             seconds_until = (close_minutes + 1440 - now_minutes) * 60
         warning_times = [3600, 1800, 900, 600, 300, 60, 30]
         for wt in warning_times:
-            if wt <= seconds_until < wt + 10:
+            if wt <= seconds_until < wt + 10:  # +10 секунд, чтобы не пропустить
                 key = f"warn_{chat_id}_{now.strftime('%Y%m%d')}_{wt}"
                 if key not in sent_notifications:
                     sent_notifications[key] = True
@@ -618,7 +629,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (СОЛО) — РАБОТАЮТ
+#  ИГРЫ (СОЛО)
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -1100,7 +1111,6 @@ async def confirm_admin(call: types.CallbackQuery):
         return
     name = (await bot.get_chat_member(chat_id, uid)).user.first_name
     perms = await get_admin_permissions(chat_id, uid)
-    # Клавиатура как у Iris
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{'✔️' if perms['can_promote'] else '❌'} Назначение админов", callback_data=f"perm_toggle_{uid}_{chat_id}_can_promote")],
         [InlineKeyboardButton(text=f"{'✔️' if perms['can_change_info'] else '❌'} Профиль группы", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info"),
@@ -1201,14 +1211,14 @@ async def back_admin(call: types.CallbackQuery):
     await call.message.edit_text(f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:", reply_markup=keyboard)
     await call.answer()
 
+@dp.callback_query(F.data == "noop")
+async def noop_callback(call: types.CallbackQuery):
+    await call.answer("Это право пока не настраивается", show_alert=True)
+
 @dp.callback_query(F.data.startswith("cancel_admin"))
 async def cancel_admin(call: types.CallbackQuery):
     await call.message.edit_text("❌ Действие отменено.")
     await call.answer()
-
-@dp.callback_query(F.data == "noop")
-async def noop_callback(call: types.CallbackQuery):
-    await call.answer("Это право пока не настраивается", show_alert=True)
 
 # ============================================================
 #  УПРАВЛЕНИЕ ЧАТОМ И МОДЕРАЦИЕЙ
