@@ -135,7 +135,7 @@ db('''CREATE TABLE IF NOT EXISTS chat_settings (
 )''')
 
 # ============================================================
-#  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ (КАК IRIS)
+#  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ
 # ============================================================
 def detect_gender_by_name(name: str) -> int:
     name_lower = name.lower().strip()
@@ -227,19 +227,26 @@ def user_link_with_nick(user_id, chat_id, default_name):
 def save_username(user: types.User):
     if user and user.username:
         db("INSERT OR REPLACE INTO usernames (username,user_id,name) VALUES (?,?,?)", (user.username.lower(), user.id, user.first_name))
+
 async def resolve_target(message: types.Message, args: str = ""):
     if message.reply_to_message and message.reply_to_message.from_user:
         return message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name
     for word in args.split():
         if word.startswith("@"):
-            uname = word[1:].lower()
-            r = db("SELECT user_id,name FROM usernames WHERE username=?", (uname,), fetch=True)
-            if r: return r[0][0], r[0][1]
+            username = word[1:]
+            r = db("SELECT user_id,name FROM usernames WHERE username=?", (username.lower(),), fetch=True)
+            if r:
+                return r[0][0], r[0][1]
             try:
-                chat = await bot.get_chat(f"@{uname}")
-                return chat.id, getattr(chat, "first_name", uname) or uname
-            except: pass
+                chat = await bot.get_chat(f"@{username}")
+                if chat.username:
+                    db("INSERT OR REPLACE INTO usernames (username,user_id,name) VALUES (?,?,?)",
+                       (chat.username.lower(), chat.id, chat.first_name or username))
+                return chat.id, chat.first_name or username
+            except Exception:
+                continue
     return None, None
+
 async def is_admin(chat_id, user_id) -> bool:
     if user_id == OWNER_ID: return True
     try:
@@ -294,7 +301,7 @@ async def open_chat(chat_id):
     except Exception as e: logging.error(f"Ошибка открытия чата {chat_id}: {e}")
 
 # ============================================================
-#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК)
+#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК) - ИСПРАВЛЕНО
 # ============================================================
 sent_notifications = {}
 
@@ -302,6 +309,7 @@ def msktime() -> datetime:
     return datetime.now(timezone(timedelta(hours=3)))
 
 async def apply_schedule_now(chat_id):
+    """Проверяет и применяет расписание для чата"""
     close_time, open_time = await get_chat_schedule(chat_id)
     if not close_time or not open_time:
         return
@@ -309,25 +317,36 @@ async def apply_schedule_now(chat_id):
     now_minutes = now.hour * 60 + now.minute
     close_minutes = int(close_time[:2]) * 60 + int(close_time[3:])
     open_minutes = int(open_time[:2]) * 60 + int(open_time[3:])
+
+    # Определяем, должен ли чат быть закрыт в текущий момент
     if close_minutes < open_minutes:
         should_be_closed = (close_minutes <= now_minutes < open_minutes)
     else:
         should_be_closed = (now_minutes >= close_minutes or now_minutes < open_minutes)
+
     is_closed = await is_chat_closed(chat_id)
+
+    # Закрытие
     if should_be_closed and not is_closed:
         await close_chat(chat_id)
         await bot.send_message(chat_id, "🔒 Чат автоматически закрыт по расписанию.")
+        logging.info(f"Чат {chat_id} закрыт по расписанию в {now.strftime('%H:%M')}")
+    # Открытие
     elif not should_be_closed and is_closed:
         await open_chat(chat_id)
         await bot.send_message(chat_id, "🔓 Чат автоматически открыт по расписанию.")
+        logging.info(f"Чат {chat_id} открыт по расписанию в {now.strftime('%H:%M')}")
+
+    # Отправка предупреждений (только если чат открыт и до закрытия осталось меньше warning_time)
     if not should_be_closed and not is_closed:
+        # Время до следующего закрытия
         if close_minutes > now_minutes:
             seconds_until = (close_minutes - now_minutes) * 60
         else:
             seconds_until = (close_minutes + 1440 - now_minutes) * 60
         warning_times = [3600, 1800, 900, 600, 300, 60, 30]
         for wt in warning_times:
-            if wt <= seconds_until < wt + 10:
+            if wt <= seconds_until < wt + 10:  # +10 секунд, чтобы не пропустить
                 key = f"warn_{chat_id}_{now.strftime('%Y%m%d')}_{wt}"
                 if key not in sent_notifications:
                     sent_notifications[key] = True
@@ -343,6 +362,7 @@ async def apply_schedule_now(chat_id):
                 break
 
 async def scheduler_loop():
+    """Фоновый планировщик, проверяет расписание каждые 30 секунд"""
     while True:
         try:
             chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
@@ -375,7 +395,10 @@ class MainMiddleware(BaseMiddleware):
                         try: await event.delete()
                         except: pass
                         return
+                # При каждом сообщении проверяем расписание (дублируем)
                 await apply_schedule_now(cid)
+                # Автомодерация
+                await auto_moderate(event)
         return await handler(event, data)
 dp.message.middleware(MainMiddleware())
 
@@ -471,7 +494,7 @@ async def help_cmd(message: types.Message):
 ⚙️ НАСТРОЙКА: /setwelcome, /testwelcome""")
 
 # ============================================================
-#  ЭКОНОМИКА
+#  ЭКОНОМИКА (СОКРАЩЕННО)
 # ============================================================
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
@@ -558,7 +581,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (СОЛО)
+#  ИГРЫ (СОЛО) — УПРОЩЁННО
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -840,7 +863,7 @@ async def rp_action(message: types.Message):
     await message.reply(f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} {verb} {user_link_with_nick(target_id, message.chat.id, target_name)}!")
 
 # ============================================================
-#  БРАКИ
+#  БРАКИ (УПРОЩЁННО)
 # ============================================================
 async def get_marriage_info(uid, chat_id):
     row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (chat_id, uid, uid), fetch=True)
@@ -1028,21 +1051,7 @@ async def confirm_admin(call: types.CallbackQuery):
         await call.message.edit_text(f"❌ Ошибка: {e}")
         return
     name = (await bot.get_chat_member(chat_id, uid)).user.first_name
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
-    ])
-    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nПрава: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\nДля изменения прав используйте кнопки ниже.", reply_markup=keyboard)
-    await call.answer()
-@dp.callback_query(F.data.startswith("edit_admin_"))
-async def edit_admin_permissions(call: types.CallbackQuery):
-    _, _, uid_str, chat_id_str = call.data.split("_")
-    uid = int(uid_str); chat_id = int(chat_id_str)
-    try:
-        caller = await bot.get_chat_member(chat_id, call.from_user.id)
-        if caller.status != "creator" and call.from_user.id != OWNER_ID:
-            return await call.answer("❌ Только создатель!", show_alert=True)
-    except: pass
+    # Клавиатура с галочками для каждого права
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
          InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
@@ -1050,32 +1059,35 @@ async def edit_admin_permissions(call: types.CallbackQuery):
          InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(f"Настройка прав для {user_link_with_nick(uid, chat_id, 'пользователя')}:\nВыберите действие.", reply_markup=keyboard)
+    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nПрава: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\nДля изменения прав используйте кнопки ниже.", reply_markup=keyboard)
     await call.answer()
 @dp.callback_query(F.data.startswith("perm_del_"))
-async def toggle_perm_delete(call: types.CallbackQuery):
-    await call.answer("Функция в разработке (можно переключать права)", show_alert=True)
+async def perm_delete(call: types.CallbackQuery):
+    await call.answer("🔧 Удаление сообщений: вкл/выкл (разработка)", show_alert=True)
 @dp.callback_query(F.data.startswith("perm_ban_"))
-async def toggle_perm_ban(call: types.CallbackQuery):
-    await call.answer("Функция в разработке", show_alert=True)
+async def perm_ban(call: types.CallbackQuery):
+    await call.answer("🔧 Блокировка: вкл/выкл (разработка)", show_alert=True)
 @dp.callback_query(F.data.startswith("perm_pin_"))
-async def toggle_perm_pin(call: types.CallbackQuery):
-    await call.answer("Функция в разработке", show_alert=True)
+async def perm_pin(call: types.CallbackQuery):
+    await call.answer("🔧 Закрепление: вкл/выкл (разработка)", show_alert=True)
 @dp.callback_query(F.data.startswith("perm_info_"))
-async def toggle_perm_info(call: types.CallbackQuery):
-    await call.answer("Функция в разработке", show_alert=True)
+async def perm_info(call: types.CallbackQuery):
+    await call.answer("🔧 Изменение инфо: вкл/выкл (разработка)", show_alert=True)
 @dp.callback_query(F.data.startswith("back_admin_"))
 async def back_admin(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
     uid = int(uid_str); chat_id = int(chat_id_str)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔧 Изменить права", callback_data=f"edit_admin_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="🔻 Снять админку", callback_data=f"remove_admin_{uid}_{chat_id}")]
+        [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
+        [InlineKeyboardButton(text="📌 Закреплять", callback_data=f"perm_pin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
     await call.message.edit_text(f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:", reply_markup=keyboard)
     await call.answer()
 @dp.callback_query(F.data.startswith("remove_admin_"))
-async def remove_admin_from_callback(call: types.CallbackQuery):
+async def remove_admin_callback(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
     uid = int(uid_str); chat_id = int(chat_id_str)
     try:
