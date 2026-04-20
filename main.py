@@ -16,7 +16,7 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 
 # ============================================================
-#  НАСТРОЙКИ (ЗАМЕНИТЕ ТОКЕН И ID ВЛАДЕЛЬЦА!)
+#  НАСТРОЙКИ (ЗАМЕНИТЕ ТОКЕН)
 # ============================================================
 TOKEN    = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
@@ -65,6 +65,7 @@ GROUP_COMMANDS = [
     BotCommand(command="setwelcome", description="✏️ Приветствие"),
     BotCommand(command="setautoschedule", description="⏰ Настройка авто-закрытия"),
     BotCommand(command="check_schedule", description="🔍 Проверить расписание"),
+    BotCommand(command="moderation", description="⚙️ Вкл/выкл автомодерацию"),
     BotCommand(command="rp", description="🎭 Список RP действий"),
 ]
 
@@ -133,6 +134,20 @@ db('''CREATE TABLE IF NOT EXISTS chat_settings (
     close_time TEXT,
     open_time TEXT
 )''')
+db('''CREATE TABLE IF NOT EXISTS admin_permissions (
+    user_id INTEGER,
+    chat_id INTEGER,
+    can_delete BOOLEAN DEFAULT 1,
+    can_restrict BOOLEAN DEFAULT 1,
+    can_pin BOOLEAN DEFAULT 1,
+    can_change_info BOOLEAN DEFAULT 1,
+    can_invite BOOLEAN DEFAULT 1,
+    PRIMARY KEY(user_id, chat_id)
+)''')
+db('''CREATE TABLE IF NOT EXISTS moderation_settings (
+    chat_id INTEGER PRIMARY KEY,
+    enabled INTEGER DEFAULT 1
+)''')
 
 # ============================================================
 #  АВТООПРЕДЕЛЕНИЕ ПОЛА ПО ИМЕНИ
@@ -149,7 +164,7 @@ def detect_gender_by_name(name: str) -> int:
     return 0
 
 # ============================================================
-#  АВТОМОДЕРАЦИЯ (ПО ПРАВИЛАМ ЧАТА)
+#  АВТОМОДЕРАЦИЯ
 # ============================================================
 BAD_WORDS = {
     'мат': ['хуй', 'пизда', 'бля', 'ебать', 'мудак', 'сука', 'гандон', 'пидор', 'хуесос', 'долбоеб', 'уебок', 'пиздец', 'ебанутый', 'залупа', 'хуйло', 'сучка', 'блядина'],
@@ -163,10 +178,16 @@ PUNISHMENT_RULES = {
     'spam': {'warn_days': 30, 'mute_hours': 4, 'rule': '1.4. Нежелательные сообщения (спам/ссылки)'},
     'мат': {'warn_days': 30, 'mute_hours': 4, 'rule': '1.4. Нежелательные сообщения (мат)'},
 }
+
+async def is_moderation_enabled(chat_id):
+    row = db("SELECT enabled FROM moderation_settings WHERE chat_id=?", (chat_id,), fetch=True)
+    return row[0][0] == 1 if row else True
+
 async def auto_moderate(message: types.Message):
     if message.chat.type not in ("group", "supergroup"): return
     if message.from_user.is_bot: return
     if await is_admin(message.chat.id, message.from_user.id): return
+    if not await is_moderation_enabled(message.chat.id): return
     text = (message.text or message.caption or "").lower()
     if not text: return
     violation = None
@@ -253,6 +274,7 @@ async def is_admin(chat_id, user_id) -> bool:
         m = await bot.get_chat_member(chat_id, user_id)
         return m.status in ("administrator", "creator")
     except: return False
+
 def parse_duration(s: str) -> int:
     try:
         if s.endswith("м"): return int(s[:-1]) * 60
@@ -300,8 +322,23 @@ async def open_chat(chat_id):
         logging.info(f"🔓 Чат {chat_id} открыт")
     except Exception as e: logging.error(f"Ошибка открытия чата {chat_id}: {e}")
 
+async def get_admin_permissions(chat_id, user_id):
+    row = db("SELECT can_delete, can_restrict, can_pin, can_change_info, can_invite FROM admin_permissions WHERE chat_id=? AND user_id=?", (chat_id, user_id), fetch=True)
+    if row:
+        return {'can_delete': bool(row[0][0]), 'can_restrict': bool(row[0][1]), 'can_pin': bool(row[0][2]), 'can_change_info': bool(row[0][3]), 'can_invite': bool(row[0][4])}
+    return {'can_delete': True, 'can_restrict': True, 'can_pin': True, 'can_change_info': True, 'can_invite': True}
+
+async def set_admin_permission(chat_id, user_id, perm, value):
+    db("INSERT OR REPLACE INTO admin_permissions (user_id, chat_id, can_delete, can_restrict, can_pin, can_change_info, can_invite) VALUES (?,?,?,?,?,?,?)",
+       (user_id, chat_id,
+        1 if perm == 'can_delete' and value else 0 if perm == 'can_delete' else (await get_admin_permissions(chat_id, user_id))['can_delete'],
+        1 if perm == 'can_restrict' and value else 0 if perm == 'can_restrict' else (await get_admin_permissions(chat_id, user_id))['can_restrict'],
+        1 if perm == 'can_pin' and value else 0 if perm == 'can_pin' else (await get_admin_permissions(chat_id, user_id))['can_pin'],
+        1 if perm == 'can_change_info' and value else 0 if perm == 'can_change_info' else (await get_admin_permissions(chat_id, user_id))['can_change_info'],
+        1 if perm == 'can_invite' and value else 0 if perm == 'can_invite' else (await get_admin_permissions(chat_id, user_id))['can_invite']))
+
 # ============================================================
-#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК) - ИСПРАВЛЕНО
+#  АВТОМАТИЧЕСКОЕ РАСПИСАНИЕ (МСК)
 # ============================================================
 sent_notifications = {}
 
@@ -309,7 +346,6 @@ def msktime() -> datetime:
     return datetime.now(timezone(timedelta(hours=3)))
 
 async def apply_schedule_now(chat_id):
-    """Проверяет и применяет расписание для чата"""
     close_time, open_time = await get_chat_schedule(chat_id)
     if not close_time or not open_time:
         return
@@ -317,36 +353,25 @@ async def apply_schedule_now(chat_id):
     now_minutes = now.hour * 60 + now.minute
     close_minutes = int(close_time[:2]) * 60 + int(close_time[3:])
     open_minutes = int(open_time[:2]) * 60 + int(open_time[3:])
-
-    # Определяем, должен ли чат быть закрыт в текущий момент
     if close_minutes < open_minutes:
         should_be_closed = (close_minutes <= now_minutes < open_minutes)
     else:
         should_be_closed = (now_minutes >= close_minutes or now_minutes < open_minutes)
-
     is_closed = await is_chat_closed(chat_id)
-
-    # Закрытие
     if should_be_closed and not is_closed:
         await close_chat(chat_id)
         await bot.send_message(chat_id, "🔒 Чат автоматически закрыт по расписанию.")
-        logging.info(f"Чат {chat_id} закрыт по расписанию в {now.strftime('%H:%M')}")
-    # Открытие
     elif not should_be_closed and is_closed:
         await open_chat(chat_id)
         await bot.send_message(chat_id, "🔓 Чат автоматически открыт по расписанию.")
-        logging.info(f"Чат {chat_id} открыт по расписанию в {now.strftime('%H:%M')}")
-
-    # Отправка предупреждений (только если чат открыт и до закрытия осталось меньше warning_time)
     if not should_be_closed and not is_closed:
-        # Время до следующего закрытия
         if close_minutes > now_minutes:
             seconds_until = (close_minutes - now_minutes) * 60
         else:
             seconds_until = (close_minutes + 1440 - now_minutes) * 60
         warning_times = [3600, 1800, 900, 600, 300, 60, 30]
         for wt in warning_times:
-            if wt <= seconds_until < wt + 10:  # +10 секунд, чтобы не пропустить
+            if wt <= seconds_until < wt + 10:
                 key = f"warn_{chat_id}_{now.strftime('%Y%m%d')}_{wt}"
                 if key not in sent_notifications:
                     sent_notifications[key] = True
@@ -362,7 +387,6 @@ async def apply_schedule_now(chat_id):
                 break
 
 async def scheduler_loop():
-    """Фоновый планировщик, проверяет расписание каждые 30 секунд"""
     while True:
         try:
             chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
@@ -373,7 +397,7 @@ async def scheduler_loop():
         await asyncio.sleep(30)
 
 # ============================================================
-#  MIDDLEWARE (НЕ УДАЛЯЕТ ОБЫЧНЫЕ СООБЩЕНИЯ)
+#  MIDDLEWARE
 # ============================================================
 class MainMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
@@ -395,15 +419,13 @@ class MainMiddleware(BaseMiddleware):
                         try: await event.delete()
                         except: pass
                         return
-                # При каждом сообщении проверяем расписание (дублируем)
                 await apply_schedule_now(cid)
-                # Автомодерация
                 await auto_moderate(event)
         return await handler(event, data)
 dp.message.middleware(MainMiddleware())
 
 # ============================================================
-#  ГЛАВНОЕ МЕНЮ И КНОПКИ
+#  ГЛАВНОЕ МЕНЮ
 # ============================================================
 def main_menu_kb(username):
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -489,12 +511,12 @@ async def help_cmd(message: types.Message):
 ❤️ RP: /rp, +обнять, +поцеловать и др.
 💍 БРАКИ: +брак, +развод, +пара, +список браков, +отношения
 📛 НИКИ: +ник @user НовыйНик
-🔒 УПРАВЛЕНИЕ: -чат, +чат, /setautoschedule, /check_schedule
+🔒 УПРАВЛЕНИЕ: -чат, +чат, /setautoschedule, /check_schedule, /moderation
 🛡 МОДЕРАЦИЯ: !бан, !разбан, !кик, !мут, !размут, !варн, !админ, -админ
 ⚙️ НАСТРОЙКА: /setwelcome, /testwelcome""")
 
 # ============================================================
-#  ЭКОНОМИКА (СОКРАЩЕННО)
+#  ЭКОНОМИКА
 # ============================================================
 @dp.message(Command("profile"))
 async def profile(message: types.Message):
@@ -581,7 +603,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (СОЛО) — УПРОЩЁННО
+#  ИГРЫ (СОЛО)
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -806,7 +828,7 @@ async def run_duel(chat_id: int, player1_id: int, player2_id: int, game_type: st
     if duel_key in active_duels: del active_duels[duel_key]
 
 # ============================================================
-#  RP ДЕЙСТВИЯ (БЕЗОПАСНЫЕ)
+#  RP ДЕЙСТВИЯ
 # ============================================================
 RP_ACTIONS = {
     "обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"],
@@ -863,7 +885,7 @@ async def rp_action(message: types.Message):
     await message.reply(f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} {verb} {user_link_with_nick(target_id, message.chat.id, target_name)}!")
 
 # ============================================================
-#  БРАКИ (УПРОЩЁННО)
+#  БРАКИ
 # ============================================================
 async def get_marriage_info(uid, chat_id):
     row = db("SELECT user1, user2, since FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (chat_id, uid, uid), fetch=True)
@@ -1011,7 +1033,7 @@ async def set_nickname(message: types.Message):
     await message.reply(f"✅ Ник изменён! {user_link_with_nick(target_id, message.chat.id, target_name)} теперь <b>{nickname}</b>")
 
 # ============================================================
-#  КОМАНДА !АДМИН (С ПОДТВЕРЖДЕНИЕМ И КНОПКАМИ)
+#  КОМАНДА !АДМИН (С ВЫБОРОМ ПРАВ)
 # ============================================================
 @dp.message(F.text.lower().startswith("!админ"))
 async def give_admin_with_confirm(message: types.Message):
@@ -1036,6 +1058,7 @@ async def give_admin_with_confirm(message: types.Message):
          InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_admin")]
     ])
     await message.reply(f"⚠️ Вы собираетесь назначить {user_link_with_nick(uid, message.chat.id, name)} администратором.\nПодтвердите действие:", reply_markup=keyboard)
+
 @dp.callback_query(F.data.startswith("confirm_admin_"))
 async def confirm_admin(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
@@ -1046,46 +1069,71 @@ async def confirm_admin(call: types.CallbackQuery):
             return await call.answer("❌ Только создатель может подтвердить!", show_alert=True)
     except: pass
     try:
-        await bot.promote_chat_member(chat_id, uid, can_manage_chat=True, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_pin_messages=True, can_change_info=True, can_promote_members=False)
+        await bot.promote_chat_member(chat_id, uid,
+            can_manage_chat=True,
+            can_delete_messages=True,
+            can_restrict_members=True,
+            can_invite_users=True,
+            can_pin_messages=True,
+            can_change_info=True,
+            can_promote_members=False)
     except Exception as e:
         await call.message.edit_text(f"❌ Ошибка: {e}")
         return
     name = (await bot.get_chat_member(chat_id, uid)).user.first_name
-    # Клавиатура с галочками для каждого права
+    # Клавиатура с галочками (✅/❌)
+    perms = await get_admin_permissions(chat_id, uid)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
-        [InlineKeyboardButton(text="📌 Закреплять", callback_data=f"perm_pin_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nПрава: управление чатом, удаление сообщений, блокировка, приглашения, закреп, изменение информации.\nДля изменения прав используйте кнопки ниже.", reply_markup=keyboard)
+    await call.message.edit_text(f"✅ {user_link_with_nick(uid, chat_id, name)} назначен администратором!\n\nВыберите права (нажмите для переключения):", reply_markup=keyboard)
     await call.answer()
-@dp.callback_query(F.data.startswith("perm_del_"))
-async def perm_delete(call: types.CallbackQuery):
-    await call.answer("🔧 Удаление сообщений: вкл/выкл (разработка)", show_alert=True)
-@dp.callback_query(F.data.startswith("perm_ban_"))
-async def perm_ban(call: types.CallbackQuery):
-    await call.answer("🔧 Блокировка: вкл/выкл (разработка)", show_alert=True)
-@dp.callback_query(F.data.startswith("perm_pin_"))
-async def perm_pin(call: types.CallbackQuery):
-    await call.answer("🔧 Закрепление: вкл/выкл (разработка)", show_alert=True)
-@dp.callback_query(F.data.startswith("perm_info_"))
-async def perm_info(call: types.CallbackQuery):
-    await call.answer("🔧 Изменение инфо: вкл/выкл (разработка)", show_alert=True)
-@dp.callback_query(F.data.startswith("back_admin_"))
-async def back_admin(call: types.CallbackQuery):
-    _, _, uid_str, chat_id_str = call.data.split("_")
+
+@dp.callback_query(F.data.startswith("perm_toggle_"))
+async def toggle_permission(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str, perm = call.data.split("_")
     uid = int(uid_str); chat_id = int(chat_id_str)
+    try:
+        caller = await bot.get_chat_member(chat_id, call.from_user.id)
+        if caller.status != "creator" and call.from_user.id != OWNER_ID:
+            return await call.answer("❌ Только создатель!", show_alert=True)
+    except: pass
+    perms = await get_admin_permissions(chat_id, uid)
+    new_value = not perms[perm]
+    await set_admin_permission(chat_id, uid, perm, new_value)
+    # Обновляем права в Telegram (применяем только если нужно)
+    # Здесь можно вызвать promote_chat_member с новыми правами
+    try:
+        await bot.promote_chat_member(chat_id, uid,
+            can_manage_chat=True,
+            can_delete_messages=perms['can_delete'] if perm != 'can_delete' else new_value,
+            can_restrict_members=perms['can_restrict'] if perm != 'can_restrict' else new_value,
+            can_invite_users=perms['can_invite'] if perm != 'can_invite' else new_value,
+            can_pin_messages=perms['can_pin'] if perm != 'can_pin' else new_value,
+            can_change_info=perms['can_change_info'] if perm != 'can_change_info' else new_value,
+            can_promote_members=False)
+    except Exception as e:
+        logging.error(f"Ошибка обновления прав: {e}")
+    # Обновляем клавиатуру
+    new_perms = await get_admin_permissions(chat_id, uid)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗑 Удалять сообщения", callback_data=f"perm_del_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="🔨 Блокировать участников", callback_data=f"perm_ban_{uid}_{chat_id}")],
-        [InlineKeyboardButton(text="📌 Закреплять", callback_data=f"perm_pin_{uid}_{chat_id}"),
-         InlineKeyboardButton(text="ℹ️ Изменять инфо", callback_data=f"perm_info_{uid}_{chat_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
+        [InlineKeyboardButton(text=f"{'✅' if new_perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✅' if new_perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
+        [InlineKeyboardButton(text=f"{'✅' if new_perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
+        [InlineKeyboardButton(text=f"{'✅' if new_perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
+        [InlineKeyboardButton(text=f"{'✅' if new_perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
     ])
-    await call.message.edit_text(f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:", reply_markup=keyboard)
-    await call.answer()
+    await call.message.edit_reply_markup(reply_markup=keyboard)
+    await call.answer(f"Право {'включено' if new_value else 'выключено'}")
+
 @dp.callback_query(F.data.startswith("remove_admin_"))
 async def remove_admin_callback(call: types.CallbackQuery):
     _, _, uid_str, chat_id_str = call.data.split("_")
@@ -1096,18 +1144,66 @@ async def remove_admin_callback(call: types.CallbackQuery):
             return await call.answer("❌ Только создатель!", show_alert=True)
     except: pass
     try:
-        await bot.promote_chat_member(chat_id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
+        await bot.promote_chat_member(chat_id, uid,
+            can_manage_chat=False,
+            can_delete_messages=False,
+            can_restrict_members=False,
+            can_invite_users=False,
+            can_pin_messages=False,
+            can_change_info=False,
+            can_promote_members=False)
+        db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, chat_id))
         await call.message.edit_text(f"🔻 Администратор {user_link_with_nick(uid, chat_id, '')} лишён прав.")
     except Exception as e:
         await call.message.edit_text(f"❌ Ошибка: {e}")
+
+@dp.callback_query(F.data.startswith("back_admin_"))
+async def back_admin(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid = int(uid_str); chat_id = int(chat_id_str)
+    try:
+        caller = await bot.get_chat_member(chat_id, call.from_user.id)
+        if caller.status != "creator" and call.from_user.id != OWNER_ID:
+            return await call.answer("❌ Только создатель!", show_alert=True)
+    except: pass
+    perms = await get_admin_permissions(chat_id, uid)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_delete'] else '❌'} Удалять сообщения", callback_data=f"perm_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_restrict'] else '❌'} Блокировать участников", callback_data=f"perm_toggle_{uid}_{chat_id}_can_restrict")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_pin'] else '❌'} Закреплять", callback_data=f"perm_toggle_{uid}_{chat_id}_can_pin")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_change_info'] else '❌'} Изменять инфо", callback_data=f"perm_toggle_{uid}_{chat_id}_can_change_info")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_invite'] else '❌'} Приглашать", callback_data=f"perm_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"remove_admin_{uid}_{chat_id}"),
+         InlineKeyboardButton(text="🔙 Назад", callback_data=f"back_admin_{uid}_{chat_id}")]
+    ])
+    await call.message.edit_text(f"Управление правами для {user_link_with_nick(uid, chat_id, 'администратора')}:", reply_markup=keyboard)
+    await call.answer()
+
 @dp.callback_query(F.data.startswith("cancel_admin"))
 async def cancel_admin(call: types.CallbackQuery):
     await call.message.edit_text("❌ Действие отменено.")
     await call.answer()
 
 # ============================================================
-#  УПРАВЛЕНИЕ ЧАТОМ (-чат / +чат / /setautoschedule / /check_schedule)
+#  УПРАВЛЕНИЕ ЧАТОМ И МОДЕРАЦИЕЙ
 # ============================================================
+@dp.message(Command("moderation"))
+async def toggle_moderation(message: types.Message):
+    if message.chat.type not in ("group", "supergroup"):
+        return await message.reply("❌ Только в группах.")
+    if not await is_admin(message.chat.id, message.from_user.id):
+        return await message.reply("❌ Только для администраторов.")
+    args = message.text.replace("/moderation", "").strip().lower()
+    if args == "on":
+        db("INSERT OR REPLACE INTO moderation_settings (chat_id, enabled) VALUES (?,?)", (message.chat.id, 1))
+        await message.reply("✅ Автомодерация ВКЛЮЧЕНА.")
+    elif args == "off":
+        db("INSERT OR REPLACE INTO moderation_settings (chat_id, enabled) VALUES (?,?)", (message.chat.id, 0))
+        await message.reply("✅ Автомодерация ВЫКЛЮЧЕНА.")
+    else:
+        status = await is_moderation_enabled(message.chat.id)
+        await message.reply(f"📋 Статус модерации: {'ВКЛЮЧЕНА' if status else 'ВЫКЛЮЧЕНА'}\n/moderation on или /moderation off")
+
 @dp.message(Command("setautoschedule"))
 async def set_auto_schedule(message: types.Message):
     if message.chat.type not in ("group", "supergroup"):
@@ -1139,10 +1235,7 @@ async def check_schedule_cmd(message: types.Message):
     now_str = now.strftime("%H:%M")
     is_closed = await is_chat_closed(message.chat.id)
     status = "ЗАКРЫТ" if is_closed else "ОТКРЫТ"
-    await message.reply(f"📅 Текущее время МСК: {now_str}\n"
-                        f"🔒 Закрытие в: {close_time}\n"
-                        f"🔓 Открытие в: {open_time}\n"
-                        f"Статус чата: {status}")
+    await message.reply(f"📅 Текущее время МСК: {now_str}\n🔒 Закрытие в: {close_time}\n🔓 Открытие в: {open_time}\nСтатус чата: {status}")
 
 @dp.message(F.text.lower().startswith(("-чат", "!чат")))
 async def close_chat_cmd(message: types.Message):
@@ -1188,7 +1281,7 @@ async def open_chat_callback(call: types.CallbackQuery):
     await call.answer()
 
 # ============================================================
-#  ПРИВЕТСТВИЯ (АВТООПРЕДЕЛЕНИЕ ПОЛА)
+#  ПРИВЕТСТВИЯ
 # ============================================================
 @dp.my_chat_member()
 async def on_bot_added(update: ChatMemberUpdated):
@@ -1372,6 +1465,7 @@ async def remove_admin_cmd(message: types.Message):
         return await message.reply("❌ Укажи @юзертег или ответь")
     try:
         await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False)
+        db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, message.chat.id))
         await message.reply(f"🔻 {user_link_with_nick(uid, message.chat.id, name)} лишён прав админа")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
@@ -1432,7 +1526,6 @@ async def main():
     await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
     me = await bot.get_me()
     print(f"✅ @{me.username} запущен!")
-    # Принудительно применить расписание для всех чатов при старте
     chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
     for chat in chats:
         await apply_schedule_now(chat[0])
