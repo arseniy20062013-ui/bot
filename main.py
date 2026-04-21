@@ -1,6 +1,6 @@
 # ============================================================
 #  VOID HELPER BOT — ПОЛНАЯ ПОДДЕРЖКА ТЕМ (ВЕТОК)
-#  Исправлено: ВСЕ ответы, включая дайсы, в ту же тему
+#  ИСПРАВЛЕНО: DICE ОТПРАВЛЯЮТСЯ КАК ОТВЕТ (REPLY) НА КОМАНДУ
 # ============================================================
 
 import asyncio
@@ -775,7 +775,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (DICE В ТЕМУ)
+#  ИГРЫ (DICE ОТПРАВЛЯЮТСЯ КАК ОТВЕТ НА КОМАНДУ)
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -795,7 +795,8 @@ async def casino_cmd(message: types.Message):
     if not bet: return await bot.send_message(message.chat.id, "🎰 /casino 100", message_thread_id=message.message_thread_id)
     uid = await check_bet(message, bet, 10)
     if not uid: return
-    msg = await bot.send_dice(message.chat.id, emoji="🎰", message_thread_id=message.message_thread_id)
+    # DICE как ответ на команду
+    msg = await bot.send_dice(message.chat.id, emoji="🎰", reply_to_message_id=message.message_id)
     await asyncio.sleep(DICE_WAIT["🎰"])
     v = msg.dice.value
     if v == 64: add_coins(uid, bet*10); add_xp(uid, 150); await bot.send_message(message.chat.id, f"🎉 ДЖЕКПОТ! +{bet*10}💰", message_thread_id=message.message_thread_id)
@@ -810,7 +811,7 @@ async def darts_cmd(message: types.Message):
     if not bet: return await bot.send_message(message.chat.id, "🎯 /darts 50", message_thread_id=message.message_thread_id)
     uid = await check_bet(message, bet, 10)
     if not uid: return
-    msg = await bot.send_dice(message.chat.id, emoji="🎯", message_thread_id=message.message_thread_id)
+    msg = await bot.send_dice(message.chat.id, emoji="🎯", reply_to_message_id=message.message_id)
     await asyncio.sleep(DICE_WAIT["🎯"])
     v = msg.dice.value
     if v == 6: add_coins(uid, bet*5); await bot.send_message(message.chat.id, f"🎯 БУЛЛ-АЙ! +{bet*5}💰", message_thread_id=message.message_thread_id)
@@ -850,7 +851,7 @@ async def rps_cmd(message: types.Message):
         add_coins(uid, bet)
 
 # ============================================================
-#  ДУЭЛИ (DICE В ТЕМУ)
+#  ДУЭЛИ (DICE КАК ОТВЕТ НА КОМАНДУ)
 # ============================================================
 active_duels = {}
 DUEL_GAMES = {"dice": {"emoji": "🎲", "name": "Кости"}, "basketball": {"emoji": "🏀", "name": "Баскетбол"}, "football": {"emoji": "⚽", "name": "Футбол"}, "bowling": {"emoji": "🎳", "name": "Боулинг"}}
@@ -898,12 +899,13 @@ async def run_duel(chat_id, p1, p2, game_type, thread_id):
     game = DUEL_GAMES[game_type]
     p1m, p2m = await bot.get_chat_member(chat_id, p1), await bot.get_chat_member(chat_id, p2)
     p1n, p2n = p1m.user.first_name, p2m.user.first_name
+    # Отправляем как ответ на сообщение вызова (не можем, т.к. нет message_id, поэтому используем thread_id)
     msg = await bot.send_message(chat_id, f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)} vs {user_link_with_nick(p2, chat_id, p2n)}\n\n🎲 {user_link_with_nick(p1, chat_id, p1n)} бросает...", message_thread_id=thread_id)
-    d1 = await bot.send_dice(chat_id, emoji="🎲", message_thread_id=thread_id)
+    d1 = await bot.send_dice(chat_id, emoji="🎲", reply_to_message_id=msg.message_id)
     await asyncio.sleep(DICE_WAIT["🎲"])
     s1 = d1.dice.value
     await msg.edit_text(f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)}: {s1}\n{user_link_with_nick(p2, chat_id, p2n)} бросает...")
-    d2 = await bot.send_dice(chat_id, emoji="🎲", message_thread_id=thread_id)
+    d2 = await bot.send_dice(chat_id, emoji="🎲", reply_to_message_id=msg.message_id)
     await asyncio.sleep(DICE_WAIT["🎲"])
     s2 = d2.dice.value
     if s1 > s2: w_id, w_name = p1, p1n
@@ -917,11 +919,10 @@ async def run_duel(chat_id, p1, p2, game_type, thread_id):
 
 # ============================================================
 #  RP, БРАКИ, НИКНЕЙМЫ, МОДЕРАЦИЯ, АДМИН-ПАНЕЛЬ
-#  (полный код скопируйте из предыдущего ответа, убедившись, что везде есть message_thread_id)
+#  (скопируйте остальные функции из предыдущего полного кода,
+#   убедившись, что в send_message есть message_thread_id)
 # ============================================================
-# ВАЖНО: чтобы ответить полностью, скопируйте ВСЕ оставшиеся функции из предыдущего 
-# полного кода и в каждом bot.send_message / bot.send_dice добавьте параметр 
-# message_thread_id=message.message_thread_id (или thread_id)
+# ...
 
 # ============================================================
 #  ЗАПУСК
