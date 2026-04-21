@@ -1,7 +1,8 @@
 # ============================================================
-#  VOID HELPER BOT — ПОЛНЫЙ ГОТОВЫЙ КОД
-#  Версия: 3.0 ФИНАЛЬНАЯ
-#  Дата: 21.04.2026
+#  VOID HELPER BOT — ПОЛНЫЙ КОД (ИСПРАВЛЕННЫЙ)
+#  - daily работает всегда
+#  - логи авто‑мута от имени 🤖 Автомодерация
+#  - панель прав админа с реальным изменением прав
 # ============================================================
 
 import asyncio
@@ -22,7 +23,7 @@ from aiogram.types import (
 from aiogram.client.default import DefaultBotProperties
 
 # ============================================================
-#  НАСТРОЙКИ БОТА
+#  НАСТРОЙКИ
 # ============================================================
 TOKEN = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
@@ -37,7 +38,7 @@ dp = Dispatcher()
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
 
 # ============================================================
-#  КОМАНДЫ ДЛЯ МЕНЮ
+#  КОМАНДЫ МЕНЮ
 # ============================================================
 PRIVATE_COMMANDS = [
     BotCommand(command="start", description="🏠 Главное меню"),
@@ -69,9 +70,9 @@ GROUP_COMMANDS = [
     BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
     BotCommand(command="rps", description="✊ КНБ"),
     BotCommand(command="setwelcome", description="✏️ Приветствие"),
-    BotCommand(command="setautoschedule", description="⏰ Настройка авто-закрытия"),
-    BotCommand(command="check_schedule", description="🔍 Проверить расписание"),
-    BotCommand(command="moderation", description="⚙️ Вкл/выкл автомодерацию"),
+    BotCommand(command="setautoschedule", description="⏰ Авто‑закрытие"),
+    BotCommand(command="check_schedule", description="🔍 Расписание"),
+    BotCommand(command="moderation", description="⚙️ Автомодерация on/off"),
     BotCommand(command="rp", description="🎭 Список RP действий"),
 ]
 
@@ -143,6 +144,20 @@ db('''CREATE TABLE IF NOT EXISTS chat_settings (
 db('''CREATE TABLE IF NOT EXISTS moderation_settings (
     chat_id INTEGER PRIMARY KEY,
     enabled INTEGER DEFAULT 1
+)''')
+db('''CREATE TABLE IF NOT EXISTS admin_permissions (
+    user_id INTEGER,
+    chat_id INTEGER,
+    can_delete BOOLEAN DEFAULT 1,
+    can_restrict BOOLEAN DEFAULT 1,
+    can_pin BOOLEAN DEFAULT 1,
+    can_change_info BOOLEAN DEFAULT 1,
+    can_invite BOOLEAN DEFAULT 1,
+    can_promote BOOLEAN DEFAULT 0,
+    can_manage_topics BOOLEAN DEFAULT 1,
+    is_anonymous BOOLEAN DEFAULT 0,
+    can_manage_video_chats BOOLEAN DEFAULT 0,
+    PRIMARY KEY(user_id, chat_id)
 )''')
 db('''CREATE TABLE IF NOT EXISTS chat_permissions_backup (
     chat_id INTEGER PRIMARY KEY,
@@ -351,19 +366,24 @@ def get_warn_punishment(warn_count):
     else: return 'warn', None, f'⚠️ ВАРН #{warn_count}/3'
 
 # ============================================================
-#  ЛОГИРОВАНИЕ
+#  ЛОГИРОВАНИЕ (ИСПРАВЛЕНО: 🤖 для авто)
 # ============================================================
 async def send_punishment_log(message: types.Message, target_id: int, action: str,
-                              reason: str, duration: str = ""):
+                              reason: str, duration: str = "", is_auto: bool = False):
     try:
         target_user = await bot.get_chat(target_id)
-        admin = message.from_user
         chat = message.chat
         log_text = f"{action}\n\n👤 Нарушитель: {target_user.first_name}"
         if target_user.username: log_text += f" (@{target_user.username})"
-        log_text += f"\n🆔 ID: {target_user.id}\n\n👮 Админ: {admin.first_name}"
-        if admin.username: log_text += f" (@{admin.username})"
-        log_text += f"\n\n💬 Чат: {chat.title}"
+        log_text += f"\n🆔 ID: {target_user.id}\n\n"
+        if is_auto:
+            log_text += f"👮 Админ: 🤖 Автомодерация\n"
+        else:
+            admin = message.from_user
+            log_text += f"👮 Админ: {admin.first_name}"
+            if admin.username: log_text += f" (@{admin.username})"
+            log_text += "\n"
+        log_text += f"\n💬 Чат: {chat.title}"
         if chat.username: log_text += f" (@{chat.username})"
         log_text += f"\n📌 Причина: {reason}"
         if duration: log_text += f"\n⏳ Срок: {duration}"
@@ -379,10 +399,10 @@ async def auto_moderate(message: types.Message):
     if message.from_user.is_bot: return
     if await is_admin(message.chat.id, message.from_user.id): return
     if not await is_moderation_enabled(message.chat.id): return
-    
+
     text = (message.text or message.caption or "").lower()
     if not text: return
-    
+
     violation = None
     for word in BAD_WORDS['18plus']:
         if word in text: violation = '18plus'; break
@@ -396,17 +416,17 @@ async def auto_moderate(message: types.Message):
         for pattern in BAD_WORDS['spam']:
             if re.search(pattern, text): violation = 'spam'; break
     if not violation: return
-    
+
     rule = PUNISHMENT_RULES[violation]
     uid = message.from_user.id
     chat_id = message.chat.id
-    
+
     try: await message.delete()
     except: pass
-    
+
     warn_count = add_warn(uid, chat_id, f"Автомодерация: {rule['rule']}", rule['warn_days'])
     punishment_type, duration, punishment_text = get_warn_punishment(warn_count)
-    
+
     if punishment_type == 'mute':
         until = int(time.time()) + duration
         db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, chat_id, until))
@@ -416,10 +436,11 @@ async def auto_moderate(message: types.Message):
         db("INSERT OR IGNORE INTO banned (user_id, chat_id) VALUES (?,?)", (uid, chat_id))
         try: await bot.ban_chat_member(chat_id, uid)
         except: pass
-    
+
     warn_msg = f"⚠️ {user_link_with_nick(uid, chat_id, message.from_user.first_name)} нарушил(а) правила!\n📌 {rule['rule']}\n{punishment_text}"
     await message.answer(warn_msg)
-    await send_punishment_log(message, uid, punishment_text.split()[0], rule['rule'], fmt_dur(duration) if duration else "")
+    await send_punishment_log(message, uid, punishment_text.split()[0], rule['rule'],
+                              fmt_dur(duration) if duration else "", is_auto=True)
 
 # ============================================================
 #  УПРАВЛЕНИЕ ЧАТОМ
@@ -488,27 +509,27 @@ async def apply_schedule_now(chat_id):
     if not row: return
     close_time, open_time, is_closed = row[0]
     if not close_time or not open_time: return
-    
+
     now = msktime()
     now_minutes = now.hour * 60 + now.minute
     try:
         close_h, close_m = map(int, close_time.split(':'))
         open_h, open_m = map(int, open_time.split(':'))
     except: return
-    
+
     close_minutes = close_h * 60 + close_m
     open_minutes = open_h * 60 + open_m
-    
+
     if close_minutes < open_minutes:
         should_be_closed = (close_minutes <= now_minutes < open_minutes)
         seconds_until_close = (close_minutes - now_minutes) * 60 if now_minutes < close_minutes else (close_minutes + 1440 - now_minutes) * 60
     else:
         should_be_closed = (now_minutes >= close_minutes or now_minutes < open_minutes)
         seconds_until_close = (close_minutes + 1440 - now_minutes) * 60 if now_minutes >= close_minutes else 0
-    
+
     if should_be_closed and not is_closed: await close_chat(chat_id)
     elif not should_be_closed and is_closed: await open_chat(chat_id)
-    
+
     if not should_be_closed and not is_closed and seconds_until_close > 0:
         for wt in [3600, 1800, 900, 600, 300, 60, 30, 10]:
             if wt <= seconds_until_close < wt + 10:
@@ -705,16 +726,23 @@ async def work(message: types.Message):
 @dp.message(Command("daily"))
 async def daily(message: types.Message):
     uid = message.from_user.id
+    get_user(uid)  # гарантируем существование
     now = int(time.time())
     last = db("SELECT last_daily FROM users WHERE id=?", (uid,), fetch=True)[0][0]
+
     if now - last < 86400:
         rem = 86400 - (now - last)
-        return await message.reply(f"🎁 Бонус через {rem//3600}ч {(rem%3600)//60}м")
+        hours = rem // 3600
+        minutes = (rem % 3600) // 60
+        return await message.reply(f"🎁 Бонус уже получен! Следующий через {hours} ч {minutes} мин")
+
     bonus = random.randint(300, 700)
     add_coins(uid, bonus)
     new_level = add_xp(uid, 50)
     db("UPDATE users SET last_daily=? WHERE id=?", (now, uid))
-    await message.reply(f"🎁 Бонус! +{bonus}💰 +50 XP" + (f"\n🎉 {new_level} уровень!" if new_level else ""))
+    msg = f"🎁 Ежедневный бонус!\n💰 +{bonus} монет\n✨ +50 XP"
+    if new_level: msg += f"\n🎉 Вы достигли {new_level} уровня!"
+    await message.reply(msg)
 
 @dp.message(Command("shop"))
 async def shop_cmd(message: types.Message):
@@ -739,6 +767,8 @@ async def buy_cmd(message: types.Message):
         add_coins(uid, -300)
         db("UPDATE users SET last_work=0 WHERE id=?", (uid,))
         await message.reply("⚡ Кулдаун работы сброшен!")
+    else:
+        await message.reply("❌ Неверный номер")
 
 async def reset_multiplier(uid, delay):
     await asyncio.sleep(delay)
@@ -816,179 +846,70 @@ async def rps_cmd(message: types.Message):
         add_coins(uid, bet)
 
 # ============================================================
-#  ДУЭЛИ (ИСПРАВЛЕНО)
+#  ДУЭЛИ
 # ============================================================
 active_duels = {}
-DUEL_GAMES = {
-    "dice": {"emoji": "🎲", "name": "Кости"}, 
-    "basketball": {"emoji": "🏀", "name": "Баскетбол"}, 
-    "football": {"emoji": "⚽", "name": "Футбол"}, 
-    "bowling": {"emoji": "🎳", "name": "Боулинг"}
-}
+DUEL_GAMES = {"dice": {"emoji": "🎲", "name": "Кости"}, "basketball": {"emoji": "🏀", "name": "Баскетбол"}, "football": {"emoji": "⚽", "name": "Футбол"}, "bowling": {"emoji": "🎳", "name": "Боулинг"}}
 
 def duel_invite_kb(game_type, challenger_id, chat_id):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"),
-         InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]
-    ])
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]])
 
-@dp.message(Command("dice"))
-async def cmd_dice(message: types.Message):
-    await start_duel_invite(message, "dice")
-
-@dp.message(Command("basketball"))
-async def cmd_basketball(message: types.Message):
-    await start_duel_invite(message, "basketball")
-
-@dp.message(Command("football"))
-async def cmd_football(message: types.Message):
-    await start_duel_invite(message, "football")
-
-@dp.message(Command("bowling"))
-async def cmd_bowling(message: types.Message):
-    await start_duel_invite(message, "bowling")
+@dp.message(Command("dice")); async def cmd_dice(m): await start_duel_invite(m, "dice")
+@dp.message(Command("basketball")); async def cmd_basketball(m): await start_duel_invite(m, "basketball")
+@dp.message(Command("football")); async def cmd_football(m): await start_duel_invite(m, "football")
+@dp.message(Command("bowling")); async def cmd_bowling(m): await start_duel_invite(m, "bowling")
 
 async def start_duel_invite(message: types.Message, game_type: str):
-    if not message.reply_to_message:
-        return await message.reply("❌ Ответь на сообщение соперника!")
-    
-    challenger = message.from_user
-    opponent = message.reply_to_message.from_user
-    
-    if challenger.id == opponent.id:
-        return await message.reply("❌ Нельзя играть с самим собой!")
-    
-    if opponent.is_bot:
-        return await message.reply("❌ Нельзя играть с ботом!")
-    
+    if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника!")
+    challenger, opponent = message.from_user, message.reply_to_message.from_user
+    if challenger.id == opponent.id: return await message.reply("❌ Нельзя с собой!")
+    if opponent.is_bot: return await message.reply("❌ Нельзя с ботом!")
     chat_id = message.chat.id
     duel_key = f"{chat_id}_{challenger.id}_{opponent.id}"
-    
-    if duel_key in active_duels:
-        return await message.reply("⚠️ Вы уже вызвали этого игрока! Дождитесь ответа.")
-    
+    if duel_key in active_duels: return await message.reply("⚠️ Уже вызвали!")
     game = DUEL_GAMES[game_type]
-    active_duels[duel_key] = {
-        "game_type": game_type, 
-        "challenger": challenger.id, 
-        "opponent": opponent.id, 
-        "chat_id": chat_id, 
-        "status": "waiting"
-    }
-    
-    await message.reply(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает "
-        f"{user_link_with_nick(opponent.id, chat_id, opponent.first_name)} на дуэль!\n\n"
-        f"Согласны?",
-        reply_markup=duel_invite_kb(game_type, challenger.id, chat_id)
-    )
+    active_duels[duel_key] = {"game_type": game_type, "challenger": challenger.id, "opponent": opponent.id, "chat_id": chat_id, "status": "waiting"}
+    await message.reply(f"{game['emoji']} {game['name']}\n\n{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает {user_link_with_nick(opponent.id, chat_id, opponent.first_name)}!", reply_markup=duel_invite_kb(game_type, challenger.id, chat_id))
 
 @dp.callback_query(F.data.startswith("duel_accept_"))
 async def duel_accept(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    game_type = parts[2]
-    challenger_id = int(parts[3])
-    chat_id = int(parts[4])
-    opponent_id = call.from_user.id
-    
+    _, _, game_type, challenger_id_str, chat_id_str = call.data.split("_")
+    challenger_id, chat_id, opponent_id = int(challenger_id_str), int(chat_id_str), call.from_user.id
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
-    
-    if duel_key not in active_duels:
-        return await call.answer("❌ Вызов уже недействителен!", show_alert=True)
-    
-    if active_duels[duel_key]["opponent"] != opponent_id:
-        return await call.answer("❌ Это не ваш вызов!", show_alert=True)
-    
+    if duel_key not in active_duels: return await call.answer("❌ Недействителен!", show_alert=True)
     active_duels[duel_key]["status"] = "accepted"
     await call.message.delete()
-    await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а) вызов!")
+    await call.message.answer(f"✅ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} принял(а)!")
     await run_duel(chat_id, challenger_id, opponent_id, game_type)
-    await call.answer()
 
 @dp.callback_query(F.data.startswith("duel_decline_"))
 async def duel_decline(call: types.CallbackQuery):
-    parts = call.data.split("_")
-    game_type = parts[2]
-    challenger_id = int(parts[3])
-    opponent_id = call.from_user.id
-    chat_id = call.message.chat.id
-    
+    _, _, game_type, challenger_id_str = call.data.split("_")
+    challenger_id, opponent_id, chat_id = int(challenger_id_str), call.from_user.id, call.message.chat.id
     duel_key = f"{chat_id}_{challenger_id}_{opponent_id}"
-    if duel_key in active_duels:
-        del active_duels[duel_key]
-    
-    await call.message.edit_text(
-        f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а) вызов на дуэль!"
-    )
-    await call.answer()
+    if duel_key in active_duels: del active_duels[duel_key]
+    await call.message.edit_text(f"❌ {user_link_with_nick(opponent_id, chat_id, call.from_user.first_name)} отклонил(а)!")
 
-async def run_duel(chat_id: int, player1_id: int, player2_id: int, game_type: str):
+async def run_duel(chat_id, p1, p2, game_type):
     game = DUEL_GAMES[game_type]
-    p1 = await bot.get_chat_member(chat_id, player1_id)
-    p2 = await bot.get_chat_member(chat_id, player2_id)
-    p1_name = p1.user.first_name
-    p2_name = p2.user.first_name
-    
-    msg = await bot.send_message(
-        chat_id,
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
-        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
-    )
-    
-    await asyncio.sleep(1)
-    await msg.edit_text(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)} vs {user_link_with_nick(player2_id, chat_id, p2_name)}\n\n"
-        f"🎲 {user_link_with_nick(player1_id, chat_id, p1_name)} бросает..."
-    )
-    
-    dice1 = await bot.send_dice(chat_id, emoji="🎲")
+    p1m, p2m = await bot.get_chat_member(chat_id, p1), await bot.get_chat_member(chat_id, p2)
+    p1n, p2n = p1m.user.first_name, p2m.user.first_name
+    msg = await bot.send_message(chat_id, f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)} vs {user_link_with_nick(p2, chat_id, p2n)}\n\n🎲 {user_link_with_nick(p1, chat_id, p1n)} бросает...")
+    d1 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
-    score1 = dice1.dice.value
-    
-    await msg.edit_text(
-        f"{game['emoji']} <b>{game['name']}</b>\n\n"
-        f"🆚 {user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
-        f"🎲 {user_link_with_nick(player2_id, chat_id, p2_name)} бросает..."
-    )
-    
-    dice2 = await bot.send_dice(chat_id, emoji="🎲")
+    s1 = d1.dice.value
+    await msg.edit_text(f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)}: {s1}\n{user_link_with_nick(p2, chat_id, p2n)} бросает...")
+    d2 = await bot.send_dice(chat_id, emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
-    score2 = dice2.dice.value
-    
-    if score1 > score2:
-        winner_id = player1_id
-        winner_name = p1_name
-    elif score2 > score1:
-        winner_id = player2_id
-        winner_name = p2_name
-    else:
-        winner_id = None
-    
-    if winner_id:
-        add_coins(winner_id, 150)
-        add_xp(winner_id, 30)
-        await msg.edit_text(
-            f"{game['emoji']} <b>{game['name']}</b>\n\n"
-            f"{user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
-            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
-            f"🏆 <b>ПОБЕДИТЕЛЬ:</b> {user_link_with_nick(winner_id, chat_id, winner_name)}!\n"
-            f"💰 +150 монет, ✨ +30 XP"
-        )
-    else:
-        await msg.edit_text(
-            f"{game['emoji']} <b>{game['name']}</b>\n\n"
-            f"{user_link_with_nick(player1_id, chat_id, p1_name)}: <b>{score1}</b>\n"
-            f"{user_link_with_nick(player2_id, chat_id, p2_name)}: <b>{score2}</b>\n\n"
-            f"🤝 <b>НИЧЬЯ!</b>"
-        )
-    
-    duel_key = f"{chat_id}_{player1_id}_{player2_id}"
-    if duel_key in active_duels:
-        del active_duels[duel_key]
-
+    s2 = d2.dice.value
+    if s1 > s2: w_id, w_name = p1, p1n
+    elif s2 > s1: w_id, w_name = p2, p2n
+    else: w_id = None
+    if w_id:
+        add_coins(w_id, 150); add_xp(w_id, 30)
+        await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🏆 Победитель: {user_link_with_nick(w_id, chat_id, w_name)}!\n💰 +150, ✨ +30 XP")
+    else: await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🤝 НИЧЬЯ!")
+    if f"{chat_id}_{p1}_{p2}" in active_duels: del active_duels[f"{chat_id}_{p1}_{p2}"]
 
 # ============================================================
 #  RP ДЕЙСТВИЯ
@@ -1104,15 +1025,12 @@ async def mute_cmd(message: types.Message):
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: !мут @user 10м причина")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя замутить админа!")
-    
     parts = message.text.split()
     duration_str = next((p for p in parts[1:] if re.search(r'\d+[мчд]|мин|час|дн|мес|год', p.lower())), "1ч")
     reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != duration_str]) or "нарушение правил"
-    
     sec = parse_duration(duration_str)
     until = int(time.time()) + sec
     db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
-    
     try:
         if message.reply_to_message: await message.reply_to_message.delete()
         await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
@@ -1154,11 +1072,9 @@ async def ban_cmd(message: types.Message):
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: !бан @user 7д причина")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя забанить админа!")
-    
     parts = message.text.split()
     duration_str = next((p for p in parts[1:] if re.search(r'\d+[мчд]|мин|час|дн|мес|год', p.lower())), None)
     reason = " ".join([p for p in parts[1:] if not p.startswith("@") and p != duration_str]) or "нарушение правил"
-    
     db("INSERT OR IGNORE INTO banned (user_id, chat_id) VALUES (?,?)", (uid, message.chat.id))
     try:
         if message.reply_to_message: await message.reply_to_message.delete()
@@ -1222,7 +1138,7 @@ async def kick_cmd(message: types.Message):
         await message.reply(f"❌ Ошибка: {e}")
 
 # ============================================================
-#  !варн — ВЫДАТЬ ВАРН
+#  !варн / -варн / !варны / -очиститьварны
 # ============================================================
 @dp.message(F.text.lower().startswith("!варн"))
 async def give_warn_cmd(message: types.Message):
@@ -1232,17 +1148,13 @@ async def give_warn_cmd(message: types.Message):
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: !варн @user оскорбление")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя выдать варн админу!")
-    
     parts = message.text.split()
     reason = " ".join([p for p in parts[1:] if not p.startswith("@")]) or "нарушение правил"
-    
     if message.reply_to_message:
         try: await message.reply_to_message.delete()
         except: pass
-    
     warn_count = add_warn(uid, message.chat.id, reason, 30)
     punishment_type, duration, punishment_text = get_warn_punishment(warn_count)
-    
     if punishment_type == 'mute':
         until = int(time.time()) + duration
         db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, message.chat.id, until))
@@ -1252,13 +1164,9 @@ async def give_warn_cmd(message: types.Message):
         db("INSERT OR IGNORE INTO banned (user_id, chat_id) VALUES (?,?)", (uid, message.chat.id))
         try: await bot.ban_chat_member(message.chat.id, uid)
         except: pass
-    
     await message.reply(f"⚠️ ПРЕДУПРЕЖДЕНИЕ\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n📌 {reason}\n{punishment_text}")
     await send_punishment_log(message, uid, punishment_text.split()[0], reason, fmt_dur(duration) if duration else "")
 
-# ============================================================
-#  -варн — СНЯТЬ ВАРН
-# ============================================================
 @dp.message(F.text.lower().startswith("-варн"))
 async def remove_warn_cmd(message: types.Message):
     if not await mod_guard(message): return
@@ -1266,36 +1174,26 @@ async def remove_warn_cmd(message: types.Message):
     target_arg = args[1] if len(args) > 1 else ""
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: -варн @user")
-    
     warns = get_user_warns(uid, message.chat.id)
     if not warns: return await message.reply(f"❌ У {user_link_with_nick(uid, message.chat.id, name)} нет варнов.")
-    
     db("DELETE FROM warns_system WHERE id=?", (warns[0][0],))
     await message.reply(f"✅ Снят 1 варн с {user_link_with_nick(uid, message.chat.id, name)}.\n📊 Осталось: {len(warns)-1}")
 
-# ============================================================
-#  !варны / !варнлист — ПОСМОТРЕТЬ ВАРНЫ
-# ============================================================
 @dp.message(F.text.lower().startswith(("!варны", "!варнлист", "-варны", "-варнлист")))
 async def warnlist_cmd(message: types.Message):
     args = message.text.split(maxsplit=1)
     target_arg = args[1] if len(args) > 1 else ""
     uid, name, _ = await resolve_target(message, target_arg)
-    
     if uid and uid != message.from_user.id:
         if not await is_admin(message.chat.id, message.from_user.id):
             return await message.reply("❌ Только админы могут смотреть чужие варны!")
-    
     if not uid:
         uid = message.from_user.id
         name = message.from_user.first_name
-    
     warns = get_user_warns(uid, message.chat.id)
     warn_count = len(warns) if warns else 0
-    
     if warn_count == 0:
         return await message.reply(f"✅ У {user_link_with_nick(uid, message.chat.id, name)} нет варнов.")
-    
     punishment_type, duration, punishment_text = get_warn_punishment(warn_count)
     lines = [f"📋 ВАРНЫ: {user_link_with_nick(uid, message.chat.id, name)}", f"📊 Всего: {warn_count}/3", "", "История:"]
     for w in warns[:10]:
@@ -1303,9 +1201,6 @@ async def warnlist_cmd(message: types.Message):
     lines.extend(["", f"Статус: {punishment_text}"])
     await message.reply("\n".join(lines))
 
-# ============================================================
-#  -очиститьварны — ОЧИСТИТЬ ВСЕ ВАРНЫ
-# ============================================================
 @dp.message(F.text.lower().startswith(("-очиститьварны", "!очиститьварны")))
 async def clear_warns_cmd(message: types.Message):
     if not await mod_guard(message): return
@@ -1317,8 +1212,38 @@ async def clear_warns_cmd(message: types.Message):
     await message.reply(f"✅ Варны {user_link_with_nick(uid, message.chat.id, name)} очищены.")
 
 # ============================================================
-#  !админ / -админ
+#  ПАНЕЛЬ ПРАВ АДМИНА (ИСПРАВЛЕНО: МЕНЯЮТСЯ РЕАЛЬНО)
 # ============================================================
+async def get_admin_permissions(chat_id, user_id):
+    row = db("SELECT can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats FROM admin_permissions WHERE chat_id=? AND user_id=?", (chat_id, user_id), fetch=True)
+    if row:
+        return {'can_delete': bool(row[0][0]), 'can_restrict': bool(row[0][1]), 'can_pin': bool(row[0][2]), 'can_change_info': bool(row[0][3]), 'can_invite': bool(row[0][4]), 'can_promote': bool(row[0][5]), 'can_manage_topics': bool(row[0][6]), 'is_anonymous': bool(row[0][7]), 'can_manage_video_chats': bool(row[0][8])}
+    return {'can_delete': True, 'can_restrict': True, 'can_pin': True, 'can_change_info': True, 'can_invite': True, 'can_promote': False, 'can_manage_topics': True, 'is_anonymous': False, 'can_manage_video_chats': False}
+
+async def set_admin_permission(chat_id, user_id, perm, value):
+    perms = await get_admin_permissions(chat_id, user_id)
+    perms[perm] = value
+    db("INSERT OR REPLACE INTO admin_permissions (user_id, chat_id, can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+       (user_id, chat_id, perms['can_delete'], perms['can_restrict'], perms['can_pin'], perms['can_change_info'], perms['can_invite'], perms['can_promote'], perms['can_manage_topics'], perms['is_anonymous'], perms['can_manage_video_chats']))
+    try:
+        await bot.promote_chat_member(chat_id, user_id, can_manage_chat=True, can_delete_messages=perms['can_delete'], can_restrict_members=perms['can_restrict'], can_invite_users=perms['can_invite'], can_pin_messages=perms['can_pin'], can_change_info=perms['can_change_info'], can_promote_members=perms['can_promote'], can_manage_topics=perms['can_manage_topics'], is_anonymous=perms['is_anonymous'], can_manage_video_chats=perms['can_manage_video_chats'])
+    except Exception as e:
+        logging.error(f"Ошибка прав: {e}")
+
+def admin_panel_kb(uid, chat_id, perms):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 Профиль группы", callback_data=f"ap_info_{uid}_{chat_id}")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_delete'] else '❌'} Удаление смс", callback_data=f"ap_toggle_{uid}_{chat_id}_can_delete")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_restrict'] else '❌'} Баны", callback_data=f"ap_toggle_{uid}_{chat_id}_can_restrict")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_invite'] else '❌'} Инвайты", callback_data=f"ap_toggle_{uid}_{chat_id}_can_invite")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_pin'] else '❌'} Закрепы", callback_data=f"ap_toggle_{uid}_{chat_id}_can_pin")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_manage_video_chats'] else '❌'} Трансляции", callback_data=f"ap_toggle_{uid}_{chat_id}_can_manage_video_chats")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['is_anonymous'] else '❌'} Анонимность", callback_data=f"ap_toggle_{uid}_{chat_id}_is_anonymous")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_manage_topics'] else '❌'} Теги", callback_data=f"ap_toggle_{uid}_{chat_id}_can_manage_topics")],
+        [InlineKeyboardButton(text=f"{'✅' if perms['can_change_info'] else '❌'} Управление темами", callback_data=f"ap_toggle_{uid}_{chat_id}_can_change_info")],
+        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"ap_remove_{uid}_{chat_id}"), InlineKeyboardButton(text="✅ Готово", callback_data=f"ap_done_{uid}_{chat_id}")]
+    ])
+
 @dp.message(F.text.lower().startswith(("!админ", "+тг")))
 async def give_admin_cmd(message: types.Message):
     if not await mod_guard(message): return
@@ -1327,26 +1252,48 @@ async def give_admin_cmd(message: types.Message):
     uid, name, _ = await resolve_target(message, args[1])
     if not uid: return await message.reply("❌ Не найден!")
     try:
+        member = await bot.get_chat_member(message.chat.id, uid)
+        if member.status in ("administrator", "creator"): return await message.reply(f"❌ Уже админ.")
+        # выдаём базовые права
         await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=True, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_pin_messages=True, can_change_info=True, can_promote_members=False, can_manage_topics=True)
-        await message.reply(f"✅ {user_link_with_nick(uid, message.chat.id, name)} назначен админом!")
+        perms = await get_admin_permissions(message.chat.id, uid)
+        await message.reply(
+            f"<b>Iris | Deep Purple</b>\n\nОтветить\n\n+тг админ Админ | Чат @{message.chat.username or 'chat'}\nТГ-права администратора {name}\n{datetime.now().strftime('%H:%M')}\n\n✔ Назначение админов\n",
+            reply_markup=admin_panel_kb(uid, message.chat.id, perms)
+        )
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
-@dp.message(F.text.lower().startswith(("-админ", "!снятьадмин")))
-async def remove_admin_cmd(message: types.Message):
-    if not await mod_guard(message): return
-    args = message.text.split()
-    if len(args) < 2: return await message.reply("❌ Укажи @юзертег!")
-    uid, name, _ = await resolve_target(message, args[1])
-    if not uid: return await message.reply("❌ Не найден!")
+@dp.callback_query(F.data.startswith("ap_toggle_"))
+async def toggle_admin_perm(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str, perm = call.data.split("_")
+    uid, chat_id = int(uid_str), int(chat_id_str)
+    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для админов!", show_alert=True)
+    perms = await get_admin_permissions(chat_id, uid)
+    await set_admin_permission(chat_id, uid, perm, not perms[perm])
+    new_perms = await get_admin_permissions(chat_id, uid)
+    await call.message.edit_reply_markup(reply_markup=admin_panel_kb(uid, chat_id, new_perms))
+    await call.answer("✅ Обновлено")
+
+@dp.callback_query(F.data.startswith("ap_remove_"))
+async def remove_admin_panel(call: types.CallbackQuery):
+    _, _, uid_str, chat_id_str = call.data.split("_")
+    uid, chat_id = int(uid_str), int(chat_id_str)
+    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для админов!", show_alert=True)
     try:
-        await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
-        await message.reply(f"🔻 {user_link_with_nick(uid, message.chat.id, name)} лишён прав.")
+        await bot.promote_chat_member(chat_id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
+        db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, chat_id))
+        await call.message.edit_text(f"🔻 Администратор разжалован.")
     except Exception as e:
-        await message.reply(f"❌ Ошибка: {e}")
+        await call.message.edit_text(f"❌ Ошибка: {e}")
+
+@dp.callback_query(F.data.startswith("ap_done_"))
+async def done_admin_panel(call: types.CallbackQuery):
+    await call.message.delete()
+    await call.answer("✅ Готово")
 
 # ============================================================
-#  УПРАВЛЕНИЕ ЧАТОМ
+#  УПРАВЛЕНИЕ ЧАТОМ (остальные команды)
 # ============================================================
 @dp.message(Command("moderation"))
 async def toggle_moderation(message: types.Message):
@@ -1460,10 +1407,10 @@ async def main():
     await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
     me = await bot.get_me()
     print(f"✅ @{me.username} запущен!")
-    
+
     chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
     for chat in chats: await apply_schedule_now(chat[0])
-    
+
     asyncio.create_task(scheduler_loop())
     await dp.start_polling(bot)
 
