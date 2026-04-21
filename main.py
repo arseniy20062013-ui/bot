@@ -1,12 +1,5 @@
 # ============================================================
-#  VOID HELPER BOT — ПОЛНЫЙ ФИНАЛЬНЫЙ КОД
-#  ВСЕ БАГИ ИСПРАВЛЕНЫ:
-#  - Склонение в приветствии (вошёл/вошла/вошли)
-#  - Правильное упоминание (@username или ссылка)
-#  - Стикер казино в ответ (reply) в ту же ветку
-#  - !мутлист / !банлист не удаляют сообщение
-#  - !админ правильно распознаёт @юзертег
-#  - Правила VOID, система варнов, подробный /help
+#  VOID HELPER BOT — ПОЛНЫЙ ФИНАЛЬНЫЙ КОД (С ЗАЩИТОЙ ОТ ТАЙМАУТОВ)
 # ============================================================
 
 import asyncio
@@ -15,6 +8,7 @@ import logging
 import time
 import random
 import re
+import warnings
 from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
@@ -25,6 +19,9 @@ from aiogram.types import (
     BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats,
 )
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+
+warnings.filterwarnings('ignore')
 
 # ============================================================
 #  НАСТРОЙКИ
@@ -36,7 +33,10 @@ LOG_CHANNEL = '@void_official_chat'
 LOG_MESSAGE_ID = 19010
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+
+# Увеличенный таймаут для нестабильного соединения
+session = AiohttpSession(timeout=60)
+bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
@@ -185,7 +185,7 @@ db('''CREATE TABLE IF NOT EXISTS warns_system (
 )''')
 
 # ============================================================
-#  ПРАВИЛА VOID (СИСТЕМА НАКАЗАНИЙ)
+#  ПРАВИЛА VOID
 # ============================================================
 PUNISHMENT_RULES = {
     '18plus': {'rule': '1.1. 18+ контент', 'warn_days': 30, 'mute_hours': 4, 'message': '🛑 Варн на месяц + мут 4 часа'},
@@ -201,9 +201,6 @@ PUNISHMENT_RULES = {
     'creative_ad': {'rule': '4.3. Реклама', 'warn_days': 30, 'mute_hours': 6, 'message': '🛑 Варн на месяц + мут 6 часов'},
 }
 
-# ============================================================
-#  ЗАПРЕЩЁННЫЕ СЛОВА
-# ============================================================
 BAD_WORDS = {
     '18plus': ['порно', 'секс', 'голый', 'голая', 'эротика', 'интим', 'пенис', 'влагалище', 'оральный', 'минет', 'куни', 'трах', 'ебля', 'дрочить', 'мастурбация', 'член', 'вагина', 'грудь', 'сиськи', 'попка', 'задница', 'жопа', 'хуй', 'пизда', 'сексуальный', 'сексуальная', 'возбуждает', 'оргазм', 'кончить', 'кончаю', 'расчленёнка', 'расчлененка', 'насилие', 'убийство', 'смерть', 'труп', 'кровь', 'жестокость', 'пытки', 'избиение', 'изнасилование', 'убийца', 'суицид', 'самоубийство', 'повеситься', 'зарезать', 'застрелить'],
     'insult': ['тупой', 'дебил', 'идиот', 'кретин', 'лох', 'олень', 'баран', 'овца', 'дурак', 'глупый', 'урод', 'чмо', 'шлюха', 'проститутка', 'пидор', 'гандон', 'хуесос', 'долбоеб', 'уебок', 'ебанутый', 'хуйло', 'сучка', 'блядина', 'мудак', 'сука', 'даун', 'аутист', 'шизофреник', 'псих', 'больной', 'дегенерат', 'ничтожество', 'отброс', 'мусор', 'грязь', 'скотина', 'тварь', 'мразь', 'убогий', 'жалкий', 'никчёмный', 'бесполезный', 'тупица', 'бездарь'],
@@ -267,7 +264,6 @@ def user_link_with_nick(user_id, chat_id, default_name):
     return f'<a href="tg://user?id={user_id}">{display_name}</a>'
 
 def get_user_mention(user_id: int, chat_id: int, default_name: str) -> str:
-    """Возвращает @username или HTML-ссылку на профиль."""
     try:
         row = db("SELECT username FROM usernames WHERE user_id=?", (user_id,), fetch=True)
         if row and row[0][0]:
@@ -782,7 +778,7 @@ async def reset_multiplier(uid, delay):
     db("UPDATE users SET xp_multiplier=1.0 WHERE id=?", (uid,))
 
 # ============================================================
-#  ИГРЫ (СТИКЕР В ОТВЕТ)
+#  ИГРЫ
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid = message.from_user.id
@@ -923,7 +919,7 @@ async def run_duel(chat_id, p1, p2, game_type, original_message):
     if f"{chat_id}_{p1}_{p2}" in active_duels: del active_duels[f"{chat_id}_{p1}_{p2}"]
 
 # ============================================================
-#  ПРИВЕТСТВИЯ (ИСПРАВЛЕНО: СКЛОНЕНИЕ + УПОМИНАНИЕ)
+#  ПРИВЕТСТВИЯ
 # ============================================================
 def get_gender_verb_suffix(gender):
     return "ёл" if gender == 0 else "ла" if gender == 1 else "ли"
@@ -1482,20 +1478,45 @@ async def text_aliases(message: types.Message):
     if text == "боулинг": return await cmd_bowling(message)
 
 # ============================================================
-#  ЗАПУСК
+#  ЗАПУСК (С ЗАЩИТОЙ ОТ ТАЙМАУТОВ)
 # ============================================================
 async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
-    await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"Не удалось удалить вебхук: {e}. Продолжаем...")
+    
+    try:
+        await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
+        await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
+    except Exception as e:
+        logging.warning(f"Не удалось установить команды: {e}")
+    
     me = await bot.get_me()
     print(f"✅ @{me.username} запущен!")
-
-    chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
-    for chat in chats: await apply_schedule_now(chat[0])
-
+    
+    try:
+        chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
+        for chat in chats:
+            await apply_schedule_now(chat[0])
+    except Exception as e:
+        logging.error(f"Ошибка применения расписания: {e}")
+    
     asyncio.create_task(scheduler_loop())
-    await dp.start_polling(bot)
+    
+    try:
+        await dp.start_polling(bot, timeout=60, relax=0.5)
+    except Exception as e:
+        logging.error(f"Ошибка поллинга: {e}")
+        await asyncio.sleep(5)
+        await dp.start_polling(bot, timeout=120, relax=1.0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("👋 Бот остановлен!")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        time.sleep(5)
+        asyncio.run(main())
