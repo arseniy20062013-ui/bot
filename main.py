@@ -1,5 +1,12 @@
 # ============================================================
-#  VOID HELPER BOT — ПОЛНЫЙ ФИНАЛЬНЫЙ КОД (С ЗАЩИТОЙ ОТ ТАЙМАУТОВ)
+#  VOID HELPER BOT — ПОЛНЫЙ ФИНАЛЬНЫЙ КОД v2 (ИСПРАВЛЕННЫЙ)
+# ============================================================
+# ИСПРАВЛЕНИЯ:
+# 1. Клавиатура админ-панели = как на скриншоте (2 колонки)
+# 2. ap_toggle_ split("_", 4) — фикс бага с can_delete/can_restrict
+# 3. !админ работает через ответ на сообщение
+# 4. Авто-варн пишет личное сообщение юзеру, в чат — нет
+# 5. Лог мута/бана показывает правильное имя нарушителя
 # ============================================================
 
 import asyncio
@@ -34,7 +41,6 @@ LOG_MESSAGE_ID = 19010
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Увеличенный таймаут для нестабильного соединения
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
@@ -74,7 +80,7 @@ GROUP_COMMANDS = [
     BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
     BotCommand(command="rps", description="✊ КНБ"),
     BotCommand(command="setwelcome", description="✏️ Приветствие"),
-    BotCommand(command="setautoschedule", description="⏰ Авто‑закрытие"),
+    BotCommand(command="setautoschedule", description="⏰ Авто-закрытие"),
     BotCommand(command="check_schedule", description="🔍 Расписание"),
     BotCommand(command="moderation", description="⚙️ Автомодерация on/off"),
     BotCommand(command="rp", description="🎭 Список RP действий"),
@@ -149,18 +155,23 @@ db('''CREATE TABLE IF NOT EXISTS moderation_settings (
     chat_id INTEGER PRIMARY KEY,
     enabled INTEGER DEFAULT 1
 )''')
+# ============================================================
+#  ИСПРАВЛЕННАЯ ТАБЛИЦА ПРАВ АДМИНИСТРАТОРА
+#  Добавлено поле can_post_stories ("Теги")
+# ============================================================
 db('''CREATE TABLE IF NOT EXISTS admin_permissions (
     user_id INTEGER,
     chat_id INTEGER,
+    can_promote BOOLEAN DEFAULT 0,
+    can_change_info BOOLEAN DEFAULT 1,
     can_delete BOOLEAN DEFAULT 1,
     can_restrict BOOLEAN DEFAULT 1,
-    can_pin BOOLEAN DEFAULT 1,
-    can_change_info BOOLEAN DEFAULT 1,
     can_invite BOOLEAN DEFAULT 1,
-    can_promote BOOLEAN DEFAULT 0,
-    can_manage_topics BOOLEAN DEFAULT 1,
-    is_anonymous BOOLEAN DEFAULT 0,
+    can_pin BOOLEAN DEFAULT 1,
     can_manage_video_chats BOOLEAN DEFAULT 0,
+    is_anonymous BOOLEAN DEFAULT 0,
+    can_post_stories BOOLEAN DEFAULT 0,
+    can_manage_topics BOOLEAN DEFAULT 1,
     PRIMARY KEY(user_id, chat_id)
 )''')
 db('''CREATE TABLE IF NOT EXISTS chat_permissions_backup (
@@ -366,29 +377,60 @@ def clear_warns(uid, chat_id):
 # ============================================================
 #  ЛОГИРОВАНИЕ
 # ============================================================
-async def send_punishment_log(message: types.Message, target_id: int, action: str, reason: str, duration: str = "", is_auto: bool = False):
+async def send_punishment_log(
+    chat_id_or_message,
+    target_id: int,
+    action: str,
+    reason: str,
+    duration: str = "",
+    is_auto: bool = False,
+    admin_user=None
+):
+    """
+    Универсальная функция лога. Принимает либо message, либо chat_id напрямую.
+    admin_user — объект types.User, если вызвано не из message.
+    """
     try:
         target_user = await bot.get_chat(target_id)
-        chat = message.chat
-        log_text = f"{action}\n\n👤 Нарушитель: {target_user.first_name}"
-        if target_user.username: log_text += f" (@{target_user.username})"
-        log_text += f"\n🆔 ID: {target_user.id}\n\n"
-        if is_auto: log_text += f"👮 Админ: 🤖 Автомодерация\n"
+
+        # Определяем чат
+        if isinstance(chat_id_or_message, types.Message):
+            chat = chat_id_or_message.chat
+            admin = chat_id_or_message.from_user
         else:
-            admin = message.from_user
-            log_text += f"👮 Админ: {admin.first_name}"
-            if admin.username: log_text += f" (@{admin.username})"
+            chat = await bot.get_chat(chat_id_or_message)
+            admin = admin_user
+
+        log_text = f"{action}\n\n"
+        log_text += f"👤 Нарушитель: {target_user.first_name}"
+        if target_user.username:
+            log_text += f" (@{target_user.username})"
+        log_text += f"\n🆔 ID: {target_user.id}\n\n"
+
+        if is_auto:
+            log_text += "👮 Кто выдал: 🤖 Автомодерация\n"
+        elif admin:
+            log_text += f"👮 Кто выдал: {admin.first_name}"
+            if admin.username:
+                log_text += f" (@{admin.username})"
             log_text += "\n"
+
         log_text += f"\n💬 Чат: {chat.title}"
-        if chat.username: log_text += f" (@{chat.username})"
+        if chat.username:
+            log_text += f" (@{chat.username})"
         log_text += f"\n📌 Причина: {reason}"
-        if duration: log_text += f"\n⏳ Срок: {duration}"
+        if duration:
+            log_text += f"\n⏳ Срок: {duration}"
+
         await bot.send_message(LOG_CHANNEL, log_text, reply_to_message_id=LOG_MESSAGE_ID)
     except Exception as e:
         logging.error(f"Ошибка отправки лога: {e}")
 
 # ============================================================
-#  АВТОМОДЕРАЦИЯ
+#  АВТОМОДЕРАЦИЯ — ИСПРАВЛЕНО:
+#  1. Варн пишет ТОЛЬКО пользователю в личку
+#  2. В чат отправляется краткое уведомление без имени нарушителя (по желанию)
+#  3. Лог корректно показывает нарушителя
 # ============================================================
 async def auto_moderate(message: types.Message):
     if message.chat.type not in ("group", "supergroup"): return
@@ -422,11 +464,16 @@ async def auto_moderate(message: types.Message):
 
     uid = message.from_user.id
     chat_id = message.chat.id
+    user_name = message.from_user.first_name
 
+    # Удаляем сообщение нарушителя
     try: await message.delete()
     except: pass
 
     warn_count = add_warn(uid, chat_id, f"Автомодерация: {rule['rule']}", rule['warn_days'])
+
+    mute_applied = False
+    duration = 0
 
     if warn_count >= 3:
         mute_hours = rule['mute_hours']
@@ -434,21 +481,54 @@ async def auto_moderate(message: types.Message):
             duration = mute_hours * 3600
             until = int(time.time()) + duration
             db("INSERT OR REPLACE INTO muted (user_id, chat_id, until) VALUES (?,?,?)", (uid, chat_id, until))
-            try: await bot.restrict_chat_member(chat_id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
-            except: pass
+            try:
+                await bot.restrict_chat_member(
+                    chat_id, uid,
+                    permissions=ChatPermissions(can_send_messages=False),
+                    until_date=datetime.fromtimestamp(until, tz=timezone.utc)
+                )
+                mute_applied = True
+            except Exception as e:
+                logging.error(f"Ошибка мута: {e}")
+
             punishment_text = f"🔇 МУТ на {mute_hours} час(а) (варн #{warn_count})"
-            action_text = "🔇 МУТ"
+            action_text = "🔇 МУТ (автомодерация)"
         else:
             punishment_text = f"⚠️ ВАРН #{warn_count} (навсегда)"
-            action_text = "⚠️ ВАРН"
+            action_text = "⚠️ ВАРН (автомодерация)"
     else:
         punishment_text = f"⚠️ ВАРН #{warn_count}/3"
-        action_text = "⚠️ ВАРН"
-        duration = None
+        action_text = "⚠️ ВАРН (автомодерация)"
 
-    warn_msg = f"⚠️ {user_link_with_nick(uid, chat_id, message.from_user.first_name)} нарушил(а) правила!\n📌 {rule['rule']}\n{punishment_text}"
-    await bot.send_message(chat_id, warn_msg, message_thread_id=thread_id)
-    await send_punishment_log(message, uid, action_text, rule['rule'], fmt_dur(duration) if duration else "", is_auto=True)
+    # ✅ ИСПРАВЛЕНИЕ: пишем ТОЛЬКО ЮЗЕРУ в личку
+    try:
+        await bot.send_message(
+            uid,
+            f"⚠️ <b>Предупреждение от автомодерации</b>\n\n"
+            f"📌 Нарушение: {rule['rule']}\n"
+            f"{rule['message']}\n\n"
+            f"📊 {punishment_text}\n\n"
+            f"💬 Чат: {message.chat.title}"
+        )
+    except Exception:
+        # Если личка закрыта — пишем в чат кратко (без имени, для конфиденциальности)
+        try:
+            await bot.send_message(
+                chat_id,
+                f"⚠️ Сообщение удалено автомодерацией.\n📌 {rule['rule']}",
+                message_thread_id=thread_id
+            )
+        except: pass
+
+    # Логируем с правильными данными нарушителя
+    await send_punishment_log(
+        chat_id,
+        uid,
+        action_text,
+        rule['rule'],
+        fmt_dur(duration) if duration else "",
+        is_auto=True
+    )
 
 # ============================================================
 #  УПРАВЛЕНИЕ ЧАТОМ
@@ -458,21 +538,38 @@ async def save_current_permissions(chat_id):
         chat = await bot.get_chat(chat_id)
         perms = chat.permissions
         if perms is None:
-            perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_change_info=True, can_invite_users=True, can_pin_messages=True, can_manage_topics=True)
+            perms = ChatPermissions(
+                can_send_messages=True, can_send_media_messages=True,
+                can_send_polls=True, can_send_other_messages=True,
+                can_add_web_page_previews=True, can_change_info=True,
+                can_invite_users=True, can_pin_messages=True, can_manage_topics=True
+            )
         db("INSERT OR REPLACE INTO chat_permissions_backup VALUES (?,?,?,?,?,?,?,?,?,?)",
-           (chat_id, perms.can_send_messages, perms.can_send_media_messages, perms.can_send_polls, perms.can_send_other_messages, perms.can_add_web_page_previews, perms.can_change_info, perms.can_invite_users, perms.can_pin_messages, perms.can_manage_topics))
+           (chat_id, perms.can_send_messages, perms.can_send_media_messages, perms.can_send_polls,
+            perms.can_send_other_messages, perms.can_add_web_page_previews, perms.can_change_info,
+            perms.can_invite_users, perms.can_pin_messages, perms.can_manage_topics))
         return True
     except: return False
 
 async def restore_saved_permissions(chat_id):
     row = db("SELECT * FROM chat_permissions_backup WHERE chat_id=?", (chat_id,), fetch=True)
     if row:
-        perms = ChatPermissions(can_send_messages=bool(row[0][1]), can_send_media_messages=bool(row[0][2]), can_send_polls=bool(row[0][3]), can_send_other_messages=bool(row[0][4]), can_add_web_page_previews=bool(row[0][5]), can_change_info=bool(row[0][6]), can_invite_users=bool(row[0][7]), can_pin_messages=bool(row[0][8]), can_manage_topics=bool(row[0][9]))
+        perms = ChatPermissions(
+            can_send_messages=bool(row[0][1]), can_send_media_messages=bool(row[0][2]),
+            can_send_polls=bool(row[0][3]), can_send_other_messages=bool(row[0][4]),
+            can_add_web_page_previews=bool(row[0][5]), can_change_info=bool(row[0][6]),
+            can_invite_users=bool(row[0][7]), can_pin_messages=bool(row[0][8]),
+            can_manage_topics=bool(row[0][9])
+        )
         try: await bot.set_chat_permissions(chat_id, permissions=perms); return True
         except: return False
     else:
         try:
-            await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
+            await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(
+                can_send_messages=True, can_send_media_messages=True,
+                can_send_polls=True, can_send_other_messages=True,
+                can_add_web_page_previews=True, can_invite_users=True
+            ))
             return True
         except: return False
 
@@ -480,7 +577,12 @@ async def close_chat(chat_id):
     if not await save_current_permissions(chat_id): return False
     db("UPDATE chat_settings SET is_closed=1 WHERE chat_id=?", (chat_id,))
     try:
-        await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False, can_send_other_messages=False, can_add_web_page_previews=False, can_invite_users=True, can_change_info=False, can_pin_messages=False))
+        await bot.set_chat_permissions(chat_id, permissions=ChatPermissions(
+            can_send_messages=False, can_send_media_messages=False,
+            can_send_polls=False, can_send_other_messages=False,
+            can_add_web_page_previews=False, can_invite_users=True,
+            can_change_info=False, can_pin_messages=False
+        ))
         await bot.send_message(chat_id, "🔒 ЧАТ ЗАКРЫТ")
         return True
     except: return False
@@ -580,9 +682,12 @@ dp.message.middleware(MainMiddleware())
 # ============================================================
 def main_menu_kb(username):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Профиль", callback_data="m_profile"), InlineKeyboardButton(text="🏆 Топ", callback_data="m_top")],
-        [InlineKeyboardButton(text="🛒 Магазин", callback_data="m_shop"), InlineKeyboardButton(text="🎮 Игры", callback_data="m_games")],
-        [InlineKeyboardButton(text="❤️ RP", callback_data="m_rp"), InlineKeyboardButton(text="➕ Добавить в группу", url=f"https://t.me/{username}?startgroup=L")],
+        [InlineKeyboardButton(text="👤 Профиль", callback_data="m_profile"),
+         InlineKeyboardButton(text="🏆 Топ", callback_data="m_top")],
+        [InlineKeyboardButton(text="🛒 Магазин", callback_data="m_shop"),
+         InlineKeyboardButton(text="🎮 Игры", callback_data="m_games")],
+        [InlineKeyboardButton(text="❤️ RP", callback_data="m_rp"),
+         InlineKeyboardButton(text="➕ Добавить в группу", url=f"https://t.me/{username}?startgroup=L")],
     ])
 
 def back_kb():
@@ -600,7 +705,11 @@ async def start_cmd(message: types.Message):
 async def cb_profile(call: types.CallbackQuery):
     uid = call.from_user.id
     coins, xp, warns, _ = get_user(uid)
-    await call.message.edit_text(f"👤 Профиль\n\n{user_link_with_nick(uid, call.message.chat.id, call.from_user.first_name)}\n⭐ Уровень: {xp//100}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3", reply_markup=back_kb())
+    await call.message.edit_text(
+        f"👤 Профиль\n\n{user_link_with_nick(uid, call.message.chat.id, call.from_user.first_name)}\n"
+        f"⭐ Уровень: {xp//100}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3",
+        reply_markup=back_kb()
+    )
     await call.answer()
 
 @dp.callback_query(F.data == "m_top")
@@ -658,7 +767,7 @@ async def help_cmd(message: types.Message):
 4.3. Реклама в творчестве — варн месяц + мут 6 часов
 
 <b>🤖 СИСТЕМА ВАРНОВ:</b>
-• 1-2 варна — предупреждение
+• 1-2 варна — предупреждение (в личку)
 • 3 варна — мут согласно пункту правил
 • Варны сгорают через срок, указанный в правилах
 
@@ -674,20 +783,22 @@ async def help_cmd(message: types.Message):
 -чат, +чат, /setautoschedule, /check_schedule, /setwelcome
 
 <b>🛡 МОДЕРАЦИЯ (админы):</b>
-!мут @user 10м причина    — замутить
--размут @user            — размутить
-!мутлист                 — список замученных
-!бан @user 7д причина    — забанить
--разбан @user            — разбанить
-!банлист                 — список забаненных
-!кик @user               — кикнуть
-!варн @user причина      — выдать варн
--варн @user              — снять варн
-!варны @user             — посмотреть варны
--очиститьварны @user     — очистить все варны
-!админ @user             — назначить админа
--админ @user             — снять админа
-/moderation on/off       — автомодерация
+!мут @user 10м причина       — замутить
+!мут [ответ] 10м причина     — замутить ответом
+-размут @user                — размутить
+!мутлист                     — список замученных
+!бан @user 7д причина        — забанить
+!бан [ответ] 7д причина      — забанить ответом
+-разбан @user                — разбанить
+!банлист                     — список забаненных
+!кик @user или [ответ]       — кикнуть
+!варн @user причина          — выдать варн
+-варн @user                  — снять варн
+!варны @user                 — посмотреть варны
+-очиститьварны @user         — очистить все варны
+!админ @user или [ответ]     — назначить админа (откроет панель прав)
+-админ @user                 — снять админа
+/moderation on/off           — автомодерация
 
 Длительность: 10м, 2ч, 3д, 1мес, 1г
 """, message_thread_id=message.message_thread_id)
@@ -699,7 +810,12 @@ async def help_cmd(message: types.Message):
 async def profile(message: types.Message):
     uid = message.from_user.id
     coins, xp, warns, _ = get_user(uid)
-    await bot.send_message(message.chat.id, f"👤 Профиль\n\n{user_link_with_nick(uid, message.chat.id, message.from_user.first_name)}\n⭐ Уровень: {xp//100}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3", message_thread_id=message.message_thread_id)
+    await bot.send_message(
+        message.chat.id,
+        f"👤 Профиль\n\n{user_link_with_nick(uid, message.chat.id, message.from_user.first_name)}\n"
+        f"⭐ Уровень: {xp//100}\n💰 Монеты: {coins}\n📊 Опыт: {xp}\n⚠️ Варны: {warns}/3",
+        message_thread_id=message.message_thread_id
+    )
 
 @dp.message(Command("top"))
 async def top_cmd(message: types.Message):
@@ -726,7 +842,11 @@ async def work(message: types.Message):
     add_coins(uid, pay)
     new_level = add_xp(uid, xpg)
     db("UPDATE users SET last_work=? WHERE id=?", (now, uid))
-    await bot.send_message(message.chat.id, f"⛏ {job}\n💰 +{pay}💰\n✨ +{xpg} XP" + (f"\n🎉 {new_level} уровень!" if new_level else ""), message_thread_id=message.message_thread_id)
+    await bot.send_message(
+        message.chat.id,
+        f"⛏ {job}\n💰 +{pay}💰\n✨ +{xpg} XP" + (f"\n🎉 {new_level} уровень!" if new_level else ""),
+        message_thread_id=message.message_thread_id
+    )
 
 @dp.message(Command("daily"))
 async def daily(message: types.Message):
@@ -760,13 +880,13 @@ async def buy_cmd(message: types.Message):
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
     if item == 1:
-        if coins < 500: return await bot.send_message(message.chat.id, f"❌ Нужно 500💰", message_thread_id=message.message_thread_id)
+        if coins < 500: return await bot.send_message(message.chat.id, "❌ Нужно 500💰", message_thread_id=message.message_thread_id)
         add_coins(uid, -500)
         db("UPDATE users SET xp_multiplier=2.0 WHERE id=?", (uid,))
         asyncio.create_task(reset_multiplier(uid, 3600))
         await bot.send_message(message.chat.id, "✨ Множитель x2 на 1 час!", message_thread_id=message.message_thread_id)
     elif item == 2:
-        if coins < 300: return await bot.send_message(message.chat.id, f"❌ Нужно 300💰", message_thread_id=message.message_thread_id)
+        if coins < 300: return await bot.send_message(message.chat.id, "❌ Нужно 300💰", message_thread_id=message.message_thread_id)
         add_coins(uid, -300)
         db("UPDATE users SET last_work=0 WHERE id=?", (uid,))
         await bot.send_message(message.chat.id, "⚡ Кулдаун работы сброшен!", message_thread_id=message.message_thread_id)
@@ -856,15 +976,30 @@ async def rps_cmd(message: types.Message):
 #  ДУЭЛИ
 # ============================================================
 active_duels = {}
-DUEL_GAMES = {"dice": {"emoji": "🎲", "name": "Кости"}, "basketball": {"emoji": "🏀", "name": "Баскетбол"}, "football": {"emoji": "⚽", "name": "Футбол"}, "bowling": {"emoji": "🎳", "name": "Боулинг"}}
+DUEL_GAMES = {
+    "dice": {"emoji": "🎲", "name": "Кости"},
+    "basketball": {"emoji": "🏀", "name": "Баскетбол"},
+    "football": {"emoji": "⚽", "name": "Футбол"},
+    "bowling": {"emoji": "🎳", "name": "Боулинг"}
+}
 
 def duel_invite_kb(game_type, challenger_id, chat_id):
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"duel_accept_{game_type}_{challenger_id}_{chat_id}"),
+        InlineKeyboardButton(text="❌ Отказать", callback_data=f"duel_decline_{game_type}_{challenger_id}")
+    ]])
 
-@dp.message(Command("dice")); async def cmd_dice(m): await start_duel_invite(m, "dice")
-@dp.message(Command("basketball")); async def cmd_basketball(m): await start_duel_invite(m, "basketball")
-@dp.message(Command("football")); async def cmd_football(m): await start_duel_invite(m, "football")
-@dp.message(Command("bowling")); async def cmd_bowling(m): await start_duel_invite(m, "bowling")
+@dp.message(Command("dice"))
+async def cmd_dice(m): await start_duel_invite(m, "dice")
+
+@dp.message(Command("basketball"))
+async def cmd_basketball(m): await start_duel_invite(m, "basketball")
+
+@dp.message(Command("football"))
+async def cmd_football(m): await start_duel_invite(m, "football")
+
+@dp.message(Command("bowling"))
+async def cmd_bowling(m): await start_duel_invite(m, "bowling")
 
 async def start_duel_invite(message: types.Message, game_type: str):
     if not message.reply_to_message: return await message.reply("❌ Ответь на сообщение соперника!")
@@ -876,7 +1011,12 @@ async def start_duel_invite(message: types.Message, game_type: str):
     if duel_key in active_duels: return await message.reply("⚠️ Уже вызвали!")
     game = DUEL_GAMES[game_type]
     active_duels[duel_key] = {"game_type": game_type, "challenger": challenger.id, "opponent": opponent.id, "chat_id": chat_id, "status": "waiting"}
-    await message.reply(f"{game['emoji']} {game['name']}\n\n{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает {user_link_with_nick(opponent.id, chat_id, opponent.first_name)}!", reply_markup=duel_invite_kb(game_type, challenger.id, chat_id))
+    await message.reply(
+        f"{game['emoji']} {game['name']}\n\n"
+        f"{user_link_with_nick(challenger.id, chat_id, challenger.first_name)} вызывает "
+        f"{user_link_with_nick(opponent.id, chat_id, opponent.first_name)}!",
+        reply_markup=duel_invite_kb(game_type, challenger.id, chat_id)
+    )
 
 @dp.callback_query(F.data.startswith("duel_accept_"))
 async def duel_accept(call: types.CallbackQuery):
@@ -901,11 +1041,19 @@ async def run_duel(chat_id, p1, p2, game_type, original_message):
     game = DUEL_GAMES[game_type]
     p1m, p2m = await bot.get_chat_member(chat_id, p1), await bot.get_chat_member(chat_id, p2)
     p1n, p2n = p1m.user.first_name, p2m.user.first_name
-    msg = await original_message.reply(f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)} vs {user_link_with_nick(p2, chat_id, p2n)}\n\n🎲 {user_link_with_nick(p1, chat_id, p1n)} бросает...")
+    msg = await original_message.reply(
+        f"{game['emoji']} {game['name']}\n\n🆚 "
+        f"{user_link_with_nick(p1, chat_id, p1n)} vs {user_link_with_nick(p2, chat_id, p2n)}\n\n"
+        f"🎲 {user_link_with_nick(p1, chat_id, p1n)} бросает..."
+    )
     d1 = await msg.reply_dice(emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
     s1 = d1.dice.value
-    await msg.edit_text(f"{game['emoji']} {game['name']}\n\n🆚 {user_link_with_nick(p1, chat_id, p1n)}: {s1}\n{user_link_with_nick(p2, chat_id, p2n)} бросает...")
+    await msg.edit_text(
+        f"{game['emoji']} {game['name']}\n\n🆚 "
+        f"{user_link_with_nick(p1, chat_id, p1n)}: {s1}\n"
+        f"{user_link_with_nick(p2, chat_id, p2n)} бросает..."
+    )
     d2 = await msg.reply_dice(emoji="🎲")
     await asyncio.sleep(DICE_WAIT["🎲"])
     s2 = d2.dice.value
@@ -914,7 +1062,10 @@ async def run_duel(chat_id, p1, p2, game_type, original_message):
     else: w_id = None
     if w_id:
         add_coins(w_id, 150); add_xp(w_id, 30)
-        await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🏆 Победитель: {user_link_with_nick(w_id, chat_id, w_name)}!\n💰 +150, ✨ +30 XP")
+        await msg.edit_text(
+            f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n"
+            f"🏆 Победитель: {user_link_with_nick(w_id, chat_id, w_name)}!\n💰 +150, ✨ +30 XP"
+        )
     else: await msg.edit_text(f"{game['emoji']} {game['name']}\n\n{p1n}: {s1}\n{p2n}: {s2}\n\n🤝 НИЧЬЯ!")
     if f"{chat_id}_{p1}_{p2}" in active_duels: del active_duels[f"{chat_id}_{p1}_{p2}"]
 
@@ -975,11 +1126,11 @@ async def mod_guard(message):
         return False
     return True
 
-@dp.message(F.text.lower().startswith(("!мут", "-мут")))
+@dp.message(F.text.lower().regexp(r'^[!-]мут'))
 async def mute_cmd(message: types.Message):
     if not await mod_guard(message): return
     text = message.text
-    args_text = text[4:].strip() if text.startswith("!мут") else text[4:].strip()
+    args_text = text[4:].strip()
     uid, name, _ = await resolve_target(message, args_text)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: !мут @user 10м причина")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя замутить админа!")
@@ -1014,18 +1165,27 @@ async def mute_cmd(message: types.Message):
     warn_info = f" (варнов: {warn_count})" if warn_count > 0 else ""
 
     try:
-        if message.reply_to_message: await message.reply_to_message.delete()
-        await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=False), until_date=datetime.fromtimestamp(until, tz=timezone.utc))
-        await message.reply(f"🔇 МУТ\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n⏳ {fmt_dur(sec)}\n📌 {reason}{warn_info}")
+        if message.reply_to_message:
+            try: await message.reply_to_message.delete()
+            except: pass
+        await bot.restrict_chat_member(
+            message.chat.id, uid,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=datetime.fromtimestamp(until, tz=timezone.utc)
+        )
+        await message.reply(
+            f"🔇 МУТ\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n"
+            f"⏳ {fmt_dur(sec)}\n📌 {reason}{warn_info}"
+        )
         await send_punishment_log(message, uid, '🔇 МУТ', reason, fmt_dur(sec))
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
-@dp.message(F.text.lower().startswith(("!бан", "-бан")))
+@dp.message(F.text.lower().regexp(r'^[!-]бан'))
 async def ban_cmd(message: types.Message):
     if not await mod_guard(message): return
     text = message.text
-    args_text = text[4:].strip() if text.startswith("!бан") else text[4:].strip()
+    args_text = text[4:].strip()
     uid, name, _ = await resolve_target(message, args_text)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!\nПример: !бан @user 7д спам")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя забанить админа!")
@@ -1050,21 +1210,29 @@ async def ban_cmd(message: types.Message):
             reason_parts.append(w); i += 1
 
     reason = " ".join(reason_parts) if reason_parts else "нарушение правил"
-
     warn_count = get_warn_count(uid, message.chat.id)
     warn_info = f" (варнов: {warn_count})" if warn_count > 0 else ""
 
     db("INSERT OR IGNORE INTO banned (user_id, chat_id) VALUES (?,?)", (uid, message.chat.id))
     try:
-        if message.reply_to_message: await message.reply_to_message.delete()
+        if message.reply_to_message:
+            try: await message.reply_to_message.delete()
+            except: pass
         await bot.ban_chat_member(message.chat.id, uid)
         if duration_str:
             sec = parse_duration(duration_str)
-            await message.reply(f"🚫 БАН\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n⏳ {fmt_dur(sec)}\n📌 {reason}{warn_info}")
+            await message.reply(
+                f"🚫 БАН\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n"
+                f"⏳ {fmt_dur(sec)}\n📌 {reason}{warn_info}"
+            )
             asyncio.create_task(unban_after(uid, message.chat.id, sec))
+            await send_punishment_log(message, uid, '🚫 БАН', reason, fmt_dur(sec))
         else:
-            await message.reply(f"🚫 БАН НАВСЕГДА\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n📌 {reason}{warn_info}")
-        await send_punishment_log(message, uid, '🚫 БАН', reason, fmt_dur(sec) if duration_str else "навсегда")
+            await message.reply(
+                f"🚫 БАН НАВСЕГДА\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n"
+                f"📌 {reason}{warn_info}"
+            )
+            await send_punishment_log(message, uid, '🚫 БАН', reason, "навсегда")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
@@ -1095,10 +1263,13 @@ async def give_warn_cmd(message: types.Message):
     warn_count = add_warn(uid, message.chat.id, reason, 30)
     punishment_text = f"⚠️ ВАРН #{warn_count}/3"
 
-    await message.reply(f"⚠️ ПРЕДУПРЕЖДЕНИЕ\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n📌 {reason}\n{punishment_text}")
+    await message.reply(
+        f"⚠️ ПРЕДУПРЕЖДЕНИЕ\n👤 {user_link_with_nick(uid, message.chat.id, name)}\n"
+        f"📌 {reason}\n{punishment_text}"
+    )
     await send_punishment_log(message, uid, '⚠️ ВАРН', reason, "")
 
-@dp.message(F.text.lower().startswith(("!размут", "-размут")))
+@dp.message(F.text.lower().regexp(r'^[!-]размут'))
 async def unmute_cmd(message: types.Message):
     if not await mod_guard(message): return
     args = message.text.split(maxsplit=1)
@@ -1106,11 +1277,15 @@ async def unmute_cmd(message: types.Message):
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!")
     db("DELETE FROM muted WHERE user_id=? AND chat_id=?", (uid, message.chat.id))
-    try: await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_polls=True, can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True))
+    try:
+        await bot.restrict_chat_member(message.chat.id, uid, permissions=ChatPermissions(
+            can_send_messages=True, can_send_media_messages=True, can_send_polls=True,
+            can_send_other_messages=True, can_add_web_page_previews=True, can_invite_users=True
+        ))
     except: pass
     await message.reply(f"✅ {user_link_with_nick(uid, message.chat.id, name)} размучен.")
 
-@dp.message(F.text.lower().startswith(("!мутлист", "-мутлист")))
+@dp.message(F.text.lower().regexp(r'^[!-]мутлист'))
 async def mutelist_cmd(message: types.Message):
     if not await mod_guard(message): return
     muted = db("SELECT user_id, until FROM muted WHERE chat_id=? AND until > ? ORDER BY until", (message.chat.id, int(time.time())), fetch=True)
@@ -1123,7 +1298,7 @@ async def mutelist_cmd(message: types.Message):
         except: lines.append(f"• ID {uid}")
     await message.reply("\n".join(lines))
 
-@dp.message(F.text.lower().startswith(("!разбан", "-разбан")))
+@dp.message(F.text.lower().regexp(r'^[!-]разбан'))
 async def unban_cmd(message: types.Message):
     if not await mod_guard(message): return
     args = message.text.split(maxsplit=1)
@@ -1135,7 +1310,7 @@ async def unban_cmd(message: types.Message):
     except: pass
     await message.reply(f"✅ {user_link_with_nick(uid, message.chat.id, name)} разбанен.")
 
-@dp.message(F.text.lower().startswith(("!банлист", "-банлист")))
+@dp.message(F.text.lower().regexp(r'^[!-]банлист'))
 async def banlist_cmd(message: types.Message):
     if not await mod_guard(message): return
     banned = db("SELECT user_id FROM banned WHERE chat_id=?", (message.chat.id,), fetch=True)
@@ -1148,7 +1323,7 @@ async def banlist_cmd(message: types.Message):
         except: lines.append(f"• ID {uid}")
     await message.reply("\n".join(lines))
 
-@dp.message(F.text.lower().startswith(("!кик", "-кик")))
+@dp.message(F.text.lower().regexp(r'^[!-]кик'))
 async def kick_cmd(message: types.Message):
     if not await mod_guard(message): return
     args = message.text.split(maxsplit=1)
@@ -1157,7 +1332,9 @@ async def kick_cmd(message: types.Message):
     if not uid: return await message.reply("❌ Укажи @юзертег или ответь!")
     if await is_admin(message.chat.id, uid): return await message.reply("❌ Нельзя кикнуть админа!")
     try:
-        if message.reply_to_message: await message.reply_to_message.delete()
+        if message.reply_to_message:
+            try: await message.reply_to_message.delete()
+            except: pass
         await bot.ban_chat_member(message.chat.id, uid)
         await asyncio.sleep(0.5)
         await bot.unban_chat_member(message.chat.id, uid)
@@ -1178,7 +1355,7 @@ async def remove_warn_cmd(message: types.Message):
     db("DELETE FROM warns_system WHERE id=?", (warns[0][0],))
     await message.reply(f"✅ Снят 1 варн с {user_link_with_nick(uid, message.chat.id, name)}.\n📊 Осталось: {len(warns)-1}")
 
-@dp.message(F.text.lower().startswith(("!варны", "!варнлист", "-варны", "-варнлист")))
+@dp.message(F.text.lower().regexp(r'^[!-](варны|варнлист)'))
 async def warnlist_cmd(message: types.Message):
     args = message.text.split(maxsplit=1)
     target_arg = args[1] if len(args) > 1 else ""
@@ -1198,7 +1375,7 @@ async def warnlist_cmd(message: types.Message):
         lines.append(f"• {datetime.fromtimestamp(w[2]).strftime('%d.%m.%Y')}: {w[1]} (до {datetime.fromtimestamp(w[3]).strftime('%d.%m.%Y')})")
     await message.reply("\n".join(lines))
 
-@dp.message(F.text.lower().startswith(("-очиститьварны", "!очиститьварны")))
+@dp.message(F.text.lower().regexp(r'^[!-]очиститьварны'))
 async def clear_warns_cmd(message: types.Message):
     if not await mod_guard(message): return
     args = message.text.split(maxsplit=1)
@@ -1209,94 +1386,239 @@ async def clear_warns_cmd(message: types.Message):
     await message.reply(f"✅ Варны {user_link_with_nick(uid, message.chat.id, name)} очищены.")
 
 # ============================================================
-#  АДМИН-ПАНЕЛЬ
+#  АДМИН-ПАНЕЛЬ — ПОЛНОСТЬЮ ПЕРЕРАБОТАНА
 # ============================================================
+
+def get_default_perms():
+    return {
+        'can_promote': False,
+        'can_change_info': True,
+        'can_delete': True,
+        'can_restrict': True,
+        'can_invite': True,
+        'can_pin': True,
+        'can_manage_video_chats': False,
+        'is_anonymous': False,
+        'can_post_stories': False,
+        'can_manage_topics': True,
+    }
+
 async def get_admin_permissions(chat_id, user_id):
-    row = db("SELECT can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats FROM admin_permissions WHERE chat_id=? AND user_id=?", (chat_id, user_id), fetch=True)
+    row = db(
+        "SELECT can_promote, can_change_info, can_delete, can_restrict, can_invite, "
+        "can_pin, can_manage_video_chats, is_anonymous, can_post_stories, can_manage_topics "
+        "FROM admin_permissions WHERE chat_id=? AND user_id=?",
+        (chat_id, user_id), fetch=True
+    )
     if row:
-        return {'can_delete': bool(row[0][0]), 'can_restrict': bool(row[0][1]), 'can_pin': bool(row[0][2]), 'can_change_info': bool(row[0][3]), 'can_invite': bool(row[0][4]), 'can_promote': bool(row[0][5]), 'can_manage_topics': bool(row[0][6]), 'is_anonymous': bool(row[0][7]), 'can_manage_video_chats': bool(row[0][8])}
-    return {'can_delete': True, 'can_restrict': True, 'can_pin': True, 'can_change_info': True, 'can_invite': True, 'can_promote': False, 'can_manage_topics': True, 'is_anonymous': False, 'can_manage_video_chats': False}
+        keys = ['can_promote', 'can_change_info', 'can_delete', 'can_restrict', 'can_invite',
+                'can_pin', 'can_manage_video_chats', 'is_anonymous', 'can_post_stories', 'can_manage_topics']
+        return {k: bool(v) for k, v in zip(keys, row[0])}
+    return get_default_perms()
 
-async def set_admin_permission(chat_id, user_id, perm, value):
-    perms = await get_admin_permissions(chat_id, user_id)
-    perms[perm] = value
-    db("INSERT OR REPLACE INTO admin_permissions (user_id, chat_id, can_delete, can_restrict, can_pin, can_change_info, can_invite, can_promote, can_manage_topics, is_anonymous, can_manage_video_chats) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-       (user_id, chat_id, perms['can_delete'], perms['can_restrict'], perms['can_pin'], perms['can_change_info'], perms['can_invite'], perms['can_promote'], perms['can_manage_topics'], perms['is_anonymous'], perms['can_manage_video_chats']))
+async def apply_admin_permissions_to_telegram(chat_id, user_id, perms):
+    """Реально применяет права в Telegram"""
     try:
-        await bot.promote_chat_member(chat_id, user_id, can_manage_chat=True, can_delete_messages=perms['can_delete'], can_restrict_members=perms['can_restrict'], can_invite_users=perms['can_invite'], can_pin_messages=perms['can_pin'], can_change_info=perms['can_change_info'], can_promote_members=perms['can_promote'], can_manage_topics=perms['can_manage_topics'], is_anonymous=perms['is_anonymous'], can_manage_video_chats=perms['can_manage_video_chats'])
+        await bot.promote_chat_member(
+            chat_id, user_id,
+            can_manage_chat=True,
+            can_delete_messages=perms['can_delete'],
+            can_restrict_members=perms['can_restrict'],
+            can_invite_users=perms['can_invite'],
+            can_pin_messages=perms['can_pin'],
+            can_change_info=perms['can_change_info'],
+            can_promote_members=perms['can_promote'],
+            can_manage_topics=perms['can_manage_topics'],
+            is_anonymous=perms['is_anonymous'],
+            can_manage_video_chats=perms['can_manage_video_chats'],
+        )
+        return True
     except Exception as e:
-        logging.error(f"Ошибка прав: {e}")
+        logging.error(f"Ошибка применения прав: {e}")
+        return False
 
-def admin_panel_kb(uid, chat_id, perms):
+async def save_admin_permissions(chat_id, user_id, perms):
+    """Сохраняет права в БД и применяет в Telegram"""
+    db(
+        "INSERT OR REPLACE INTO admin_permissions "
+        "(user_id, chat_id, can_promote, can_change_info, can_delete, can_restrict, can_invite, "
+        "can_pin, can_manage_video_chats, is_anonymous, can_post_stories, can_manage_topics) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (user_id, chat_id, perms['can_promote'], perms['can_change_info'], perms['can_delete'],
+         perms['can_restrict'], perms['can_invite'], perms['can_pin'],
+         perms['can_manage_video_chats'], perms['is_anonymous'],
+         perms['can_post_stories'], perms['can_manage_topics'])
+    )
+    return await apply_admin_permissions_to_telegram(chat_id, user_id, perms)
+
+def e(flag: bool) -> str:
+    """Иконка для кнопки: ✅ если включено, — если выключено"""
+    return "✅" if flag else "—"
+
+def admin_panel_kb(uid: int, chat_id: int, perms: dict) -> InlineKeyboardMarkup:
+    """
+    Клавиатура точно по скриншоту:
+    [✅ Назначение админов]          (full-width)
+    [✅ Профиль группы][✅ Удаление смс]
+    [✅ Баны          ][✅ Инвайты      ]
+    [✅ Закрепы       ][— Трансляции   ]
+    [— Анонимность    ][— Теги         ]
+    [✅ Управление темами]            (full-width)
+    [Разжаловать]                    (full-width, danger)
+    """
+    def btn(label, perm):
+        icon = e(perms[perm])
+        return InlineKeyboardButton(
+            text=f"{icon} {label}",
+            callback_data=f"ap|toggle|{uid}|{chat_id}|{perm}"
+        )
+
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👤 Профиль группы", callback_data=f"ap_info_{uid}_{chat_id}")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_delete'] else '❌'} Удаление смс", callback_data=f"ap_toggle_{uid}_{chat_id}_can_delete")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_restrict'] else '❌'} Баны", callback_data=f"ap_toggle_{uid}_{chat_id}_can_restrict")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_invite'] else '❌'} Инвайты", callback_data=f"ap_toggle_{uid}_{chat_id}_can_invite")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_pin'] else '❌'} Закрепы", callback_data=f"ap_toggle_{uid}_{chat_id}_can_pin")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_manage_video_chats'] else '❌'} Трансляции", callback_data=f"ap_toggle_{uid}_{chat_id}_can_manage_video_chats")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['is_anonymous'] else '❌'} Анонимность", callback_data=f"ap_toggle_{uid}_{chat_id}_is_anonymous")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_manage_topics'] else '❌'} Теги", callback_data=f"ap_toggle_{uid}_{chat_id}_can_manage_topics")],
-        [InlineKeyboardButton(text=f"{'✅' if perms['can_change_info'] else '❌'} Управление темами", callback_data=f"ap_toggle_{uid}_{chat_id}_can_change_info")],
-        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"ap_remove_{uid}_{chat_id}"), InlineKeyboardButton(text="✅ Готово", callback_data=f"ap_done_{uid}_{chat_id}")]
+        # Строка 1: Назначение админов (во всю ширину)
+        [btn("Назначение админов", "can_promote")],
+        # Строка 2: Профиль группы | Удаление смс
+        [btn("Профиль группы", "can_change_info"), btn("Удаление смс", "can_delete")],
+        # Строка 3: Баны | Инвайты
+        [btn("Баны", "can_restrict"), btn("Инвайты", "can_invite")],
+        # Строка 4: Закрепы | Трансляции
+        [btn("Закрепы", "can_pin"), btn("Трансляции", "can_manage_video_chats")],
+        # Строка 5: Анонимность | Теги
+        [btn("Анонимность", "is_anonymous"), btn("Теги", "can_post_stories")],
+        # Строка 6: Управление темами (во всю ширину)
+        [btn("Управление темами", "can_manage_topics")],
+        # Строка 7: Разжаловать (во всю ширину)
+        [InlineKeyboardButton(text="🔻 Разжаловать", callback_data=f"ap|remove|{uid}|{chat_id}")],
     ])
 
-@dp.message(F.text.lower().startswith(("!админ", "+тг")))
+# ✅ ИСПРАВЛЕНИЕ 1: !админ работает через ответ на сообщение
+@dp.message(F.text.lower().regexp(r'^[!+](админ|тг)'))
 async def give_admin_cmd(message: types.Message):
     if not await mod_guard(message): return
+
+    # Получаем цель: через ответ ИЛИ через @юзернейм
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2: return await message.reply("❌ Укажи @юзертег!\nПример: !админ @user")
-    target_arg = parts[1].strip()
+    target_arg = parts[1].strip() if len(parts) > 1 else ""
+
     uid, name, _ = await resolve_target(message, target_arg)
-    if not uid: return await message.reply("❌ Пользователь не найден!")
-    try:
-        member = await bot.get_chat_member(message.chat.id, uid)
-        if member.status in ("administrator", "creator"): return await message.reply(f"❌ Уже админ.")
-        await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=True, can_delete_messages=True, can_restrict_members=True, can_invite_users=True, can_pin_messages=True, can_change_info=True, can_promote_members=False, can_manage_topics=True)
-        perms = await get_admin_permissions(message.chat.id, uid)
-        await message.reply(f"<b>Iris | Deep Purple</b>\n\nОтветить\n\n+тг админ Админ | Чат @{message.chat.username or 'chat'}\nТГ-права администратора {name}\n{datetime.now().strftime('%H:%M')}\n\n✔ Назначение админов\n", reply_markup=admin_panel_kb(uid, message.chat.id, perms))
-    except Exception as e:
-        await message.reply(f"❌ Ошибка: {e}")
+    if not uid:
+        return await message.reply("❌ Ответь на сообщение пользователя или укажи @юзертег!\nПример: !админ @user")
 
-@dp.callback_query(F.data.startswith("ap_toggle_"))
+    chat_id = message.chat.id
+
+    try:
+        member = await bot.get_chat_member(chat_id, uid)
+        if member.status in ("administrator", "creator"):
+            return await message.reply(f"❌ {name} уже является администратором.")
+    except Exception as e:
+        return await message.reply(f"❌ Не удалось получить информацию о пользователе: {e}")
+
+    # Получаем дефолтные права и сохраняем
+    perms = get_default_perms()
+    success = await save_admin_permissions(chat_id, uid, perms)
+
+    if not success:
+        return await message.reply(
+            f"❌ Не удалось назначить {name} администратором.\n"
+            f"Убедитесь, что бот является администратором с правом назначать администраторов."
+        )
+
+    chat = message.chat
+    chat_mention = f"@{chat.username}" if chat.username else chat.title
+    now_time = datetime.now().strftime('%H:%M')
+
+    panel_text = (
+        f"<b>🛡 Панель прав администратора</b>\n\n"
+        f"👤 Администратор: {user_link_with_nick(uid, chat_id, name)}\n"
+        f"💬 Чат: {chat_mention}\n"
+        f"🕐 {now_time}\n\n"
+        f"Нажимайте кнопки для изменения прав.\n"
+        f"Изменения применяются мгновенно."
+    )
+
+    await message.reply(panel_text, reply_markup=admin_panel_kb(uid, chat_id, perms))
+
+# ✅ ИСПРАВЛЕНИЕ 2: Правильный парсинг callback_data с |
+#    Используем | вместо _ как разделитель, чтобы не конфликтовать с can_delete и т.д.
+@dp.callback_query(F.data.startswith("ap|toggle|"))
 async def toggle_admin_perm(call: types.CallbackQuery):
-    _, _, uid_str, chat_id_str, perm = call.data.split("_")
-    uid, chat_id = int(uid_str), int(chat_id_str)
-    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для админов!", show_alert=True)
+    # Формат: ap|toggle|{uid}|{chat_id}|{perm}
+    parts = call.data.split("|")
+    # parts = ['ap', 'toggle', uid, chat_id, perm]
+    if len(parts) < 5:
+        return await call.answer("❌ Ошибка данных", show_alert=True)
+
+    uid = int(parts[2])
+    chat_id = int(parts[3])
+    perm = parts[4]
+
+    if not await is_admin(chat_id, call.from_user.id):
+        return await call.answer("❌ Только для администраторов!", show_alert=True)
+
     perms = await get_admin_permissions(chat_id, uid)
-    await set_admin_permission(chat_id, uid, perm, not perms[perm])
-    new_perms = await get_admin_permissions(chat_id, uid)
-    await call.message.edit_reply_markup(reply_markup=admin_panel_kb(uid, chat_id, new_perms))
-    await call.answer("✅ Обновлено")
+    if perm not in perms:
+        return await call.answer("❌ Неизвестное право", show_alert=True)
 
-@dp.callback_query(F.data.startswith("ap_remove_"))
-async def remove_admin_panel(call: types.CallbackQuery):
-    _, _, uid_str, chat_id_str = call.data.split("_")
-    uid, chat_id = int(uid_str), int(chat_id_str)
-    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для админов!", show_alert=True)
+    # Переключаем право
+    perms[perm] = not perms[perm]
+
+    # Сохраняем и применяем
+    success = await save_admin_permissions(chat_id, uid, perms)
+
+    # Обновляем клавиатуру
     try:
-        await bot.promote_chat_member(chat_id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
+        await call.message.edit_reply_markup(reply_markup=admin_panel_kb(uid, chat_id, perms))
+    except: pass
+
+    status = "✅ включено" if perms[perm] else "❌ выключено"
+    await call.answer(f"Обновлено: {status}")
+
+@dp.callback_query(F.data.startswith("ap|remove|"))
+async def remove_admin_panel(call: types.CallbackQuery):
+    # Формат: ap|remove|{uid}|{chat_id}
+    parts = call.data.split("|")
+    uid = int(parts[2])
+    chat_id = int(parts[3])
+
+    if not await is_admin(chat_id, call.from_user.id):
+        return await call.answer("❌ Только для администраторов!", show_alert=True)
+
+    try:
+        await bot.promote_chat_member(
+            chat_id, uid,
+            can_manage_chat=False, can_delete_messages=False,
+            can_restrict_members=False, can_invite_users=False,
+            can_pin_messages=False, can_change_info=False,
+            can_promote_members=False, can_manage_topics=False,
+            is_anonymous=False, can_manage_video_chats=False,
+        )
         db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, chat_id))
-        await call.message.edit_text(f"🔻 Администратор разжалован.")
+        await call.message.edit_text(
+            f"🔻 Администратор разжалован.\n"
+            f"👤 ID: {uid}"
+        )
+        await call.answer("✅ Разжалован")
     except Exception as e:
-        await call.message.edit_text(f"❌ Ошибка: {e}")
+        await call.answer(f"❌ Ошибка: {e}", show_alert=True)
 
-@dp.callback_query(F.data.startswith("ap_done_"))
-async def done_admin_panel(call: types.CallbackQuery):
-    await call.message.delete()
-    await call.answer("✅ Готово")
-
-@dp.message(F.text.lower().startswith(("-админ", "!снятьадмин")))
+@dp.message(F.text.lower().regexp(r'^[!-](админ)').negate(), F.text.lower().startswith("-админ"))
 async def remove_admin_cmd(message: types.Message):
     if not await mod_guard(message): return
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2: return await message.reply("❌ Укажи @юзертег!")
+    if len(parts) < 2: return await message.reply("❌ Укажи @юзертег или ответь!")
     target_arg = parts[1].strip()
     uid, name, _ = await resolve_target(message, target_arg)
     if not uid: return await message.reply("❌ Не найден!")
     try:
-        await bot.promote_chat_member(message.chat.id, uid, can_manage_chat=False, can_delete_messages=False, can_restrict_members=False, can_invite_users=False, can_pin_messages=False, can_change_info=False, can_promote_members=False)
-        await message.reply(f"🔻 {user_link_with_nick(uid, message.chat.id, name)} лишён прав.")
+        await bot.promote_chat_member(
+            message.chat.id, uid,
+            can_manage_chat=False, can_delete_messages=False,
+            can_restrict_members=False, can_invite_users=False,
+            can_pin_messages=False, can_change_info=False,
+            can_promote_members=False, can_manage_topics=False,
+            is_anonymous=False, can_manage_video_chats=False,
+        )
+        db("DELETE FROM admin_permissions WHERE user_id=? AND chat_id=?", (uid, message.chat.id))
+        await message.reply(f"🔻 {user_link_with_nick(uid, message.chat.id, name)} лишён прав администратора.")
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
@@ -1307,9 +1629,9 @@ async def remove_admin_cmd(message: types.Message):
 async def toggle_moderation(message: types.Message):
     if not await mod_guard(message): return
     args = message.text.replace("/moderation", "").strip().lower()
-    if args == "on": db("INSERT OR REPLACE INTO moderation_settings VALUES (?,?)", (message.chat.id, 1)); await message.reply("✅ ВКЛ")
-    elif args == "off": db("INSERT OR REPLACE INTO moderation_settings VALUES (?,?)", (message.chat.id, 0)); await message.reply("✅ ВЫКЛ")
-    else: await message.reply(f"Статус: {'ВКЛ' if await is_moderation_enabled(message.chat.id) else 'ВЫКЛ'}")
+    if args == "on": db("INSERT OR REPLACE INTO moderation_settings VALUES (?,?)", (message.chat.id, 1)); await message.reply("✅ Автомодерация ВКЛ")
+    elif args == "off": db("INSERT OR REPLACE INTO moderation_settings VALUES (?,?)", (message.chat.id, 0)); await message.reply("✅ Автомодерация ВЫКЛ")
+    else: await message.reply(f"Статус автомодерации: {'ВКЛ' if await is_moderation_enabled(message.chat.id) else 'ВЫКЛ'}")
 
 @dp.message(Command("setautoschedule"))
 async def set_auto_schedule(message: types.Message):
@@ -1318,9 +1640,9 @@ async def set_auto_schedule(message: types.Message):
     if len(args) < 2: return await message.reply("⏰ /setautoschedule 23:00 09:00")
     if args[0].lower() == "off":
         db("UPDATE chat_settings SET close_time=NULL, open_time=NULL WHERE chat_id=?", (message.chat.id,))
-        return await message.reply("✅ Отключено.")
+        return await message.reply("✅ Расписание отключено.")
     if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', args[0]) or not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', args[1]):
-        return await message.reply("❌ Формат: ЧЧ:ММ")
+        return await message.reply("❌ Формат: ЧЧ:ММ (пример: 23:00 09:00)")
     await set_chat_schedule(message.chat.id, args[0], args[1])
     await apply_schedule_now(message.chat.id)
     await message.reply(f"✅ Закрытие: {args[0]}, открытие: {args[1]}")
@@ -1336,7 +1658,9 @@ async def close_chat_cmd(message: types.Message):
     if not await mod_guard(message): return
     if await is_chat_closed(message.chat.id): return await message.reply("🔒 Уже закрыт!")
     if await close_chat(message.chat.id):
-        await message.reply("✅ Чат закрыт.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔓 Открыть", callback_data=f"open_chat_{message.chat.id}")]]))
+        await message.reply("✅ Чат закрыт.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🔓 Открыть", callback_data=f"open_chat_{message.chat.id}")
+        ]]))
 
 @dp.message(F.text.lower().startswith(("+чат", "!открытьчат")))
 async def open_chat_cmd(message: types.Message):
@@ -1347,7 +1671,7 @@ async def open_chat_cmd(message: types.Message):
 @dp.callback_query(F.data.startswith("open_chat_"))
 async def open_chat_callback(call: types.CallbackQuery):
     chat_id = int(call.data.split("_")[2])
-    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для админов!", show_alert=True)
+    if not await is_admin(chat_id, call.from_user.id): return await call.answer("❌ Только для администраторов!", show_alert=True)
     if await open_chat(chat_id):
         await call.message.delete()
         await call.message.answer("✅ Чат открыт.")
@@ -1355,11 +1679,18 @@ async def open_chat_callback(call: types.CallbackQuery):
 # ============================================================
 #  RP ДЕЙСТВИЯ
 # ============================================================
-RP_ACTIONS = {"обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"], "поцеловать": ["😘 поцеловал", "😘 поцеловала", "😘 поцеловали"], "ударить": ["👊 ударил", "👊 ударила", "👊 ударили"], "погладить": ["🫳 погладил", "🫳 погладила", "🫳 погладили"], "прижаться": ["💕 прижался", "💕 прижалась", "💕 прижались"], "взять_за_руку": ["💑 взял за руку", "💑 взяла за руку", "💑 взяли за руку"]}
+RP_ACTIONS = {
+    "обнять": ["🤗 обнял", "🤗 обняла", "🤗 обняли"],
+    "поцеловать": ["😘 поцеловал", "😘 поцеловала", "😘 поцеловали"],
+    "ударить": ["👊 ударил", "👊 ударила", "👊 ударили"],
+    "погладить": ["🫳 погладил", "🫳 погладила", "🫳 погладили"],
+    "прижаться": ["💕 прижался", "💕 прижалась", "💕 прижались"],
+    "взять_за_руку": ["💑 взял за руку", "💑 взяла за руку", "💑 взяли за руку"]
+}
 
 @dp.message(Command("rp"))
 async def rp_list_cmd(message: types.Message):
-    await message.reply(f"🎭 RP действия:\n" + "\n".join([f"• {k}" for k in RP_ACTIONS.keys()]))
+    await message.reply("🎭 RP действия:\n" + "\n".join([f"• {k}" for k in RP_ACTIONS.keys()]))
 
 @dp.message(F.text.lower().startswith(tuple(RP_ACTIONS.keys())))
 async def rp_action(message: types.Message):
@@ -1368,12 +1699,15 @@ async def rp_action(message: types.Message):
     action = next((k for k in RP_ACTIONS.keys() if text.startswith(k)), None)
     if not action: return
     target_id, target_name, _ = await resolve_target(message, message.text[len(action):].strip())
-    if not target_id: return await message.reply(f"❌ Укажи @юзертег")
+    if not target_id: return await message.reply("❌ Укажи @юзертег")
     if target_id == message.from_user.id: return await message.reply("❌ Нельзя с собой!")
     gender_row = db("SELECT gender FROM user_gender WHERE user_id=?", (message.from_user.id,), fetch=True)
     gender = gender_row[0][0] if gender_row else 0
     verb = RP_ACTIONS[action][0] if gender == 0 else RP_ACTIONS[action][1] if gender == 1 else RP_ACTIONS[action][2]
-    await message.reply(f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} {verb} {user_link_with_nick(target_id, message.chat.id, target_name)}!")
+    await message.reply(
+        f"{user_link_with_nick(message.from_user.id, message.chat.id, message.from_user.first_name)} "
+        f"{verb} {user_link_with_nick(target_id, message.chat.id, target_name)}!"
+    )
 
 # ============================================================
 #  БРАКИ
@@ -1389,12 +1723,19 @@ async def get_marriage_info(uid, chat_id):
 async def marry_cmd(message: types.Message):
     uid = message.from_user.id
     if (await get_marriage_info(uid, message.chat.id))[0]: return await message.reply("❌ Вы уже в браке!")
-    args = message.text[5:].strip() if message.text.startswith("+брак") else message.text[5:].strip()
+    args = message.text[5:].strip()
     target_id, target_name, _ = await resolve_target(message, args)
     if not target_id: return await message.reply("❌ Укажи @юзертег")
     if target_id == uid: return await message.reply("❌ Нельзя на себе!")
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💍 Принять", callback_data=f"marry_accept_{uid}_{target_id}_{message.chat.id}"), InlineKeyboardButton(text="❌ Отказать", callback_data=f"marry_deny_{uid}_{target_id}")]])
-    await message.reply(f"💍 {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} предлагает брак {user_link_with_nick(target_id, message.chat.id, target_name)}!", reply_markup=keyboard)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💍 Принять", callback_data=f"marry_accept_{uid}_{target_id}_{message.chat.id}"),
+        InlineKeyboardButton(text="❌ Отказать", callback_data=f"marry_deny_{uid}_{target_id}")
+    ]])
+    await message.reply(
+        f"💍 {user_link_with_nick(uid, message.chat.id, message.from_user.first_name)} "
+        f"предлагает брак {user_link_with_nick(target_id, message.chat.id, target_name)}!",
+        reply_markup=keyboard
+    )
 
 @dp.callback_query(F.data.startswith("marry_accept_"))
 async def marry_accept(call: types.CallbackQuery):
@@ -1402,33 +1743,39 @@ async def marry_accept(call: types.CallbackQuery):
     s_id, t_id, c_id = int(s_id), int(t_id), int(c_id)
     if call.from_user.id != t_id: return await call.answer("Не вам!", show_alert=True)
     db("INSERT INTO marriages (user1, user2, chat_id, since) VALUES (?,?,?,?)", (s_id, t_id, c_id, int(time.time())))
-    await call.message.edit_text(f"💍 ПОЗДРАВЛЯЕМ!\n\n{user_link_with_nick(s_id, c_id, '')} и {user_link_with_nick(t_id, c_id, '')} теперь в браке!")
+    await call.message.edit_text(
+        f"💍 ПОЗДРАВЛЯЕМ!\n\n"
+        f"{user_link_with_nick(s_id, c_id, '')} и {user_link_with_nick(t_id, c_id, '')} теперь в браке!"
+    )
 
 @dp.callback_query(F.data.startswith("marry_deny_"))
 async def marry_deny(call: types.CallbackQuery):
     _, _, s_id, t_id = call.data.split("_")
     if call.from_user.id != int(t_id): return await call.answer("Не вам!", show_alert=True)
-    await call.message.edit_text(f"❌ Отказ в браке.")
+    await call.message.edit_text("❌ Предложение о браке отклонено.")
 
 @dp.message(F.text.lower().startswith(("+развод", "!развод")))
 async def divorce_cmd(message: types.Message):
     uid = message.from_user.id
     partner, days = await get_marriage_info(uid, message.chat.id)
-    if not partner: return await message.reply("❌ Не в браке!")
+    if not partner: return await message.reply("❌ Вы не состоите в браке!")
     db("DELETE FROM marriages WHERE chat_id=? AND (user1=? OR user2=?)", (message.chat.id, uid, uid))
-    await message.reply(f"💔 Развод! Были вместе {days} дней.")
+    await message.reply(f"💔 Развод оформлен. Вы были вместе {days} дней.")
 
 @dp.message(F.text.lower().startswith(("+пара", "!пара")))
 async def couple_info(message: types.Message):
     uid = message.from_user.id
     partner, days = await get_marriage_info(uid, message.chat.id)
-    if not partner: return await message.reply("💔 Не в браке.")
-    await message.reply(f"💑 Пара: {user_link_with_nick(uid, message.chat.id, '')} 💕 {user_link_with_nick(partner, message.chat.id, '')}\n📅 {days} дней")
+    if not partner: return await message.reply("💔 Вы не состоите в браке.")
+    await message.reply(
+        f"💑 Пара: {user_link_with_nick(uid, message.chat.id, '')} 💕 "
+        f"{user_link_with_nick(partner, message.chat.id, '')}\n📅 Вместе: {days} дней"
+    )
 
 @dp.message(F.text.lower().startswith(("+список браков", "!список браков")))
 async def marriages_list(message: types.Message):
     rows = db("SELECT user1, user2, since FROM marriages WHERE chat_id=?", (message.chat.id,), fetch=True)
-    if not rows: return await message.reply("📋 Нет браков.")
+    if not rows: return await message.reply("📋 Браков пока нет.")
     lines = ["📋 Список браков:"]
     for u1, u2, since in rows:
         days = (int(time.time()) - since) // 86400
@@ -1440,13 +1787,13 @@ async def marriages_list(message: types.Message):
 # ============================================================
 @dp.message(F.text.lower().startswith(("+ник", "!ник")))
 async def set_nickname(message: types.Message):
-    args = message.text[4:].strip() if message.text.startswith("+ник") else message.text[4:].strip()
+    args = message.text[4:].strip()
     target_id, target_name, _ = await resolve_target(message, args)
     if not target_id: return await message.reply("❌ Укажи @юзертег")
     nickname = " ".join([w for w in args.split() if not w.startswith("@")])
     if not nickname: return await message.reply("❌ Укажи ник!")
     db("INSERT OR REPLACE INTO user_nicknames (user_id, chat_id, nickname) VALUES (?,?,?)", (target_id, message.chat.id, nickname))
-    await message.reply(f"✅ Ник: {user_link_with_nick(target_id, message.chat.id, target_name)} → <b>{nickname}</b>")
+    await message.reply(f"✅ Ник установлен: {user_link_with_nick(target_id, message.chat.id, target_name)} → <b>{nickname}</b>")
 
 # ============================================================
 #  РУССКИЕ КОМАНДЫ
@@ -1478,32 +1825,38 @@ async def text_aliases(message: types.Message):
     if text == "боулинг": return await cmd_bowling(message)
 
 # ============================================================
-#  ЗАПУСК (С ЗАЩИТОЙ ОТ ТАЙМАУТОВ)
+#  ЗАПУСК
 # ============================================================
 async def main():
     try:
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception as e:
         logging.warning(f"Не удалось удалить вебхук: {e}. Продолжаем...")
-    
+
     try:
         await bot.set_my_commands(PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
         await bot.set_my_commands(GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
     except Exception as e:
         logging.warning(f"Не удалось установить команды: {e}")
-    
+
     me = await bot.get_me()
     print(f"✅ @{me.username} запущен!")
-    
+    print(f"📌 Исправления v2:")
+    print(f"   ✅ Клавиатура админ-панели = как на скриншоте")
+    print(f"   ✅ ap_toggle использует | вместо _ (фикс can_delete/can_restrict)")
+    print(f"   ✅ !админ работает через ответ на сообщение")
+    print(f"   ✅ Авто-варн пишет только в личку нарушителю")
+    print(f"   ✅ Лог показывает правильного нарушителя")
+
     try:
         chats = db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL AND open_time IS NOT NULL", fetch=True)
         for chat in chats:
             await apply_schedule_now(chat[0])
     except Exception as e:
         logging.error(f"Ошибка применения расписания: {e}")
-    
+
     asyncio.create_task(scheduler_loop())
-    
+
     try:
         await dp.start_polling(bot, timeout=60, relax=0.5)
     except Exception as e:
