@@ -12,6 +12,7 @@
 #    проверка по границам слов (не срабатывает на «дебильный»).
 # 7. RIGHT_FORBIDDEN при выдаче админки исправлен умным фолбэком.
 # 8. /setwelcome теперь принимает фото, гифки, видео и т.д.
+#    Можно отправить вместе с командой, можно следующим сообщением
 # ============================================================
 
 import asyncio
@@ -21,7 +22,6 @@ import time
 import random
 import re
 import warnings
-import json
 from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
@@ -154,7 +154,7 @@ for sql in [
 ]:
     db(sql)
 
-# Миграция существующих таблиц (добавляем колонки, если их нет)
+# Миграция существующих таблиц
 try:
     db("ALTER TABLE group_welcome ADD COLUMN welcome_type TEXT DEFAULT 'text'")
 except: pass
@@ -429,7 +429,6 @@ def save_perms_db(chat_id, user_id, perms):
         perms['can_pin'],perms['can_video_chats'],perms['can_manage_topics']))
 
 async def apply_admin_perms(chat_id, user_id, perms) -> tuple:
-    # Проверяем, есть ли у бота право promote
     bot_member = await bot.get_chat_member(chat_id, bot.id)
     if bot_member.status != 'administrator' or not bot_member.can_promote_members:
         return False, "❌ Бот не имеет права назначать администраторов!"
@@ -1032,7 +1031,6 @@ async def send_welcome_message(chat_id, member, thread_id):
            (chat_id,), fetch=True)
     
     if not r:
-        # Стандартное текстовое приветствие
         tmpl = "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
         welcome_type = "text"
         welcome_text = tmpl
@@ -1048,7 +1046,6 @@ async def send_welcome_message(chat_id, member, thread_id):
     mention = get_mention(member.id, chat_id, member.first_name)
     sfx = gsfx(g)
     
-    # Обрабатываем шаблон текста (если есть)
     if welcome_text and welcome_type in ["text", "photo", "video", "animation", "gif"]:
         caption = proc_welcome(welcome_text, member.first_name, mention, sfx)
     else:
@@ -1056,7 +1053,6 @@ async def send_welcome_message(chat_id, member, thread_id):
     
     try:
         if welcome_type == "text" or not file_id:
-            # Обычное текстовое приветствие
             await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
         
         elif welcome_type == "photo":
@@ -1070,7 +1066,6 @@ async def send_welcome_message(chat_id, member, thread_id):
         
         elif welcome_type == "sticker":
             await bot.send_sticker(chat_id, file_id, message_thread_id=thread_id)
-            # Дополнительно отправляем текст отдельным сообщением, если есть
             if caption and caption != welcome_text:
                 await bot.send_message(chat_id, caption, message_thread_id=thread_id)
         
@@ -1083,12 +1078,10 @@ async def send_welcome_message(chat_id, member, thread_id):
                 await bot.send_message(chat_id, caption, message_thread_id=thread_id)
         
         else:
-            # Неизвестный тип — отправляем как текст
             await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
     
     except Exception as e:
         logging.error(f"Ошибка отправки приветствия: {e}")
-        # Фолбэк — просто текст
         try:
             await bot.send_message(chat_id, caption or "👋 Добро пожаловать!", message_thread_id=thread_id)
         except:
@@ -1104,23 +1097,31 @@ async def welcome_new(message: types.Message):
         await send_welcome_message(cid, member, message.message_thread_id)
 
 # ============================================================
-#  /setwelcome — новый интерактивный режим
+#  /setwelcome — поддержка медиа (можно вместе с командой или след. сообщением)
 # ============================================================
+
 @dp.message(Command("setwelcome"))
 async def set_welcome_cmd(message: types.Message, state: FSMContext):
     if not await mod_guard(message):
         return
-    
-    args = message.text.replace("/setwelcome", "").strip()
-    
-    # Если передан текст сразу — сохраняем как текстовое приветствие
-    if args:
-        db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
-           (message.chat.id, args, "text", None))
-        await message.reply("✅ Текстовое приветствие сохранено!")
+
+    # Убираем саму команду из текста
+    raw = message.text or message.caption or ""
+    text_after_command = re.sub(r'^/\s*setwelcome\s*', '', raw, flags=re.IGNORECASE).strip()
+
+    # Проверяем, есть ли медиа
+    has_media = (
+        message.photo or message.animation or message.video or
+        message.sticker or message.voice or message.video_note
+    )
+
+    # Если после команды есть текст ИЛИ прикреплено медиа — сохраняем сразу
+    if text_after_command or has_media:
+        caption = text_after_command if text_after_command else (message.caption or "")
+        await save_welcome_from_message(message, caption, state)
         return
-    
-    # Иначе запускаем интерактивный режим
+
+    # Иначе — запускаем ожидание следующего сообщения
     await state.set_state(SetWelcomeState.waiting_for_welcome)
     await message.reply(
         "📸 <b>Отправь приветствие следующим сообщением!</b>\n\n"
@@ -1135,21 +1136,32 @@ async def set_welcome_cmd(message: types.Message, state: FSMContext):
         "⏳ У тебя 60 секунд."
     )
 
+
 @dp.message(SetWelcomeState.waiting_for_welcome)
 async def set_welcome_receive(message: types.Message, state: FSMContext):
     if not await mod_guard(message):
         await state.clear()
         return
-    
+
+    caption = message.text or message.caption or ""
+    await save_welcome_from_message(message, caption, state)
+
+
+async def save_welcome_from_message(message: types.Message, caption: str, state: FSMContext = None):
+    """
+    Сохраняет приветствие из любого сообщения (текст/фото/гиф/видео/стикер/войс/кружок)
+    """
+    if state:
+        await state.clear()
+
     chat_id = message.chat.id
     welcome_type = "text"
     file_id = None
-    caption = message.text or message.caption or ""
-    
+
     # Определяем тип контента
     if message.photo:
         welcome_type = "photo"
-        file_id = message.photo[-1].file_id  # Берем самое большое разрешение
+        file_id = message.photo[-1].file_id
     elif message.animation:
         welcome_type = "animation"
         file_id = message.animation.file_id
@@ -1170,16 +1182,16 @@ async def set_welcome_receive(message: types.Message, state: FSMContext):
         file_id = None
     else:
         await message.reply("❌ Неподдерживаемый тип сообщения. Попробуй ещё раз /setwelcome")
-        await state.clear()
         return
-    
+
+    # Если подпись не задана, ставим стандартный текст
+    if not caption:
+        caption = "👋 Добро пожаловать, {упоминание}!"
+
     # Сохраняем в базу
     db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
-       (chat_id, caption or "👋 Добро пожаловать, {упоминание}!", welcome_type, file_id))
-    
-    await state.clear()
-    
-    # Подтверждение
+       (chat_id, caption, welcome_type, file_id))
+
     type_names = {
         "text": "📝 Текст",
         "photo": "🖼 Фото",
@@ -1190,6 +1202,7 @@ async def set_welcome_receive(message: types.Message, state: FSMContext):
         "video_note": "🔵 Видеокружок",
     }
     await message.reply(f"✅ Приветствие сохранено! Тип: {type_names.get(welcome_type, welcome_type)}")
+
 
 # ============================================================
 #  МОДЕРАЦИЯ
@@ -1670,6 +1683,7 @@ async def main():
     me=await bot.get_me()
     print(f"✅ @{me.username} запущен! v5-final")
     print("   ✅ /setwelcome теперь принимает фото, гифки, видео и т.д.")
+    print("   ✅ Можно в том же сообщении или следующим")
     try:
         for (cid,) in db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL",fetch=True):
             await apply_schedule_now(cid)
@@ -1685,4 +1699,4 @@ if __name__=="__main__":
     try: asyncio.run(main())
     except KeyboardInterrupt: print("👋 Остановлен!")
     except Exception as e:
-        print(f"❌ {e}"); time.sleep(5); asyncio.run(main()) 
+        print(f"❌ {e}"); time.sleep(5); asyncio.run(main())
