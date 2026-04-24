@@ -1,18 +1,17 @@
 # ============================================================
-#  VOID HELPER BOT — v5-final (без AI-ответов)
+#  VOID HELPER BOT — v5-final (исправленный)
 # ============================================================
-# Исправления:
-# 1. Игры отправляют стикеры и результаты в правильную ветку (message_thread_id)
-#    и с reply на сообщение пользователя.
-# 2. !банлист / !мутлист больше не падают с ошибкой.
-# 3. !админ требует явного указания цели (нельзя назначить себя).
-# 4. Команда /addcoins для основателя (ID указан в OWNER_ID).
-# 5. Полностью обновлён /help (структурированный, без AI-раздела).
-# 6. Фильтр матов: только реально оскорбительные слова,
-#    проверка по границам слов (не срабатывает на «дебильный»).
-# 7. RIGHT_FORBIDDEN при выдаче админки исправлен умным фолбэком.
-# 8. /setwelcome теперь принимает фото, гифки, видео и т.д.
-#    Можно отправить вместе с командой, можно следующим сообщением
+# Исправления в этой версии:
+# 1. Пофикшен двойной ответ на /setwelcome
+# 2. Корректное определение медиа в том же сообщении
+# 3. Команды не перехватываются как приветствие
+# 4. Игры в правильных ветках с reply
+# 5. !мутлист/!банлист работают без ошибок
+# 6. !админ требует указания цели
+# 7. /addcoins для основателя
+# 8. Обновлённый /help
+# 9. Фильтр матов только для реальных оскорблений
+# 10. RIGHT_FORBIDDEN фикс при выдаче админки
 # ============================================================
 
 import asyncio
@@ -1097,31 +1096,38 @@ async def welcome_new(message: types.Message):
         await send_welcome_message(cid, member, message.message_thread_id)
 
 # ============================================================
-#  /setwelcome — поддержка медиа (можно вместе с командой или след. сообщением)
+#  /setwelcome — ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ============================================================
 
 @dp.message(Command("setwelcome"))
 async def set_welcome_cmd(message: types.Message, state: FSMContext):
     if not await mod_guard(message):
         return
-
-    # Убираем саму команду из текста
-    raw = message.text or message.caption or ""
-    text_after_command = re.sub(r'^/\s*setwelcome\s*', '', raw, flags=re.IGNORECASE).strip()
-
-    # Проверяем, есть ли медиа
+    
+    # Сбрасываем предыдущее состояние
+    await state.clear()
+    
+    # Проверяем, есть ли медиа В СООБЩЕНИИ С КОМАНДОЙ
     has_media = (
-        message.photo or message.animation or message.video or
-        message.sticker or message.voice or message.video_note
+        message.photo or 
+        message.animation or 
+        message.video or
+        message.sticker or 
+        message.voice or 
+        message.video_note
     )
-
-    # Если после команды есть текст ИЛИ прикреплено медиа — сохраняем сразу
-    if text_after_command or has_media:
-        caption = text_after_command if text_after_command else (message.caption or "")
+    
+    # Получаем текст после команды (если есть)
+    full_text = message.text or message.caption or ""
+    text_after = re.sub(r'^/\s*setwelcome\s*', '', full_text, flags=re.IGNORECASE).strip()
+    
+    # Если есть медиа ИЛИ есть текст после команды - сохраняем сразу
+    if has_media or text_after:
+        caption = text_after if text_after else (message.caption or "")
         await save_welcome_from_message(message, caption, state)
         return
-
-    # Иначе — запускаем ожидание следующего сообщения
+    
+    # Если ничего нет — ждём следующее сообщение
     await state.set_state(SetWelcomeState.waiting_for_welcome)
     await message.reply(
         "📸 <b>Отправь приветствие следующим сообщением!</b>\n\n"
@@ -1142,26 +1148,29 @@ async def set_welcome_receive(message: types.Message, state: FSMContext):
     if not await mod_guard(message):
         await state.clear()
         return
-
+    
+    # Проверяем, не команда ли это другая
+    if message.text and message.text.startswith('/'):
+        await state.clear()
+        return await message.reply("❌ Установка приветствия отменена.")
+    
     caption = message.text or message.caption or ""
     await save_welcome_from_message(message, caption, state)
 
 
 async def save_welcome_from_message(message: types.Message, caption: str, state: FSMContext = None):
-    """
-    Сохраняет приветствие из любого сообщения (текст/фото/гиф/видео/стикер/войс/кружок)
-    """
+    """Сохраняет приветствие из сообщения"""
     if state:
         await state.clear()
-
+    
     chat_id = message.chat.id
     welcome_type = "text"
     file_id = None
-
+    
     # Определяем тип контента
     if message.photo:
         welcome_type = "photo"
-        file_id = message.photo[-1].file_id
+        file_id = message.photo[-1].file_id  # Самое большое разрешение
     elif message.animation:
         welcome_type = "animation"
         file_id = message.animation.file_id
@@ -1183,15 +1192,15 @@ async def save_welcome_from_message(message: types.Message, caption: str, state:
     else:
         await message.reply("❌ Неподдерживаемый тип сообщения. Попробуй ещё раз /setwelcome")
         return
-
+    
     # Если подпись не задана, ставим стандартный текст
     if not caption:
         caption = "👋 Добро пожаловать, {упоминание}!"
-
+    
     # Сохраняем в базу
     db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
        (chat_id, caption, welcome_type, file_id))
-
+    
     type_names = {
         "text": "📝 Текст",
         "photo": "🖼 Фото",
@@ -1682,7 +1691,7 @@ async def main():
     except Exception as e: logging.warning(f"Commands: {e}")
     me=await bot.get_me()
     print(f"✅ @{me.username} запущен! v5-final")
-    print("   ✅ /setwelcome теперь принимает фото, гифки, видео и т.д.")
+    print("   ✅ /setwelcome исправлен — нет двойных ответов")
     print("   ✅ Можно в том же сообщении или следующим")
     try:
         for (cid,) in db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL",fetch=True):
