@@ -1,17 +1,12 @@
 # ============================================================
-#  VOID HELPER BOT — v5-final (исправленный)
+#  VOID HELPER BOT — v5-final (полностью исправленный)
 # ============================================================
-# Исправления в этой версии:
-# 1. Пофикшен двойной ответ на /setwelcome
-# 2. Корректное определение медиа в том же сообщении
-# 3. Команды не перехватываются как приветствие
-# 4. Игры в правильных ветках с reply
-# 5. !мутлист/!банлист работают без ошибок
-# 6. !админ требует указания цели
-# 7. /addcoins для основателя
-# 8. Обновлённый /help
-# 9. Фильтр матов только для реальных оскорблений
-# 10. RIGHT_FORBIDDEN фикс при выдаче админки
+# Исправления:
+# 1. /setwelcome больше не отвечает дважды
+# 2. /setwelcome текст — сразу сохраняет
+# 3. /setwelcome + медиа в том же сообщении — сразу сохраняет
+# 4. /setwelcome без ничего — ждёт следующее сообщение
+# 5. Добавлена команда !give @user сумма для основателя
 # ============================================================
 
 import asyncio
@@ -383,7 +378,6 @@ async def auto_moderate(message: types.Message):
         except Exception as e: logging.error(f"Авто-мут: {e}")
         act  = "🔇 МУТ (автомодерация)"
         ptxt = f"🔇 МУТ {rule['mute_hours']} ч. (варн #{wc})"
-    # Личное предупреждение
     try:
         await bot.send_message(uid,
             f"⚠️ <b>Предупреждение — автомодерация</b>\n\n"
@@ -394,7 +388,7 @@ async def auto_moderate(message: types.Message):
     await send_log(cid, uid, act, rule['rule'], fmt_dur(dur) if dur else "", is_auto=True)
 
 # ============================================================
-#  ПРАВА АДМИНИСТРАТОРА — ФИКС RIGHT_FORBIDDEN
+#  ПРАВА АДМИНИСТРАТОРА
 # ============================================================
 def get_default_perms() -> dict:
     return {
@@ -713,6 +707,7 @@ async def help_cmd(message: types.Message):
 • /shop – магазин
 • /buy 1 | /buy 2 – покупка
 • /profile /top – профиль и рейтинг
+• !give @user 1000 – выдать монеты (основатель)
 
 <b>🎰 Игры</b>
 • /casino ставка, /darts ставка
@@ -799,8 +794,10 @@ async def reset_mult(uid,delay):
     await asyncio.sleep(delay); db("UPDATE users SET xp_multiplier=1.0 WHERE id=?",(uid,))
 
 # ============================================================
-#  КОМАНДА ВЫДАЧИ МОНЕТ ОСНОВАТЕЛЮ
+#  КОМАНДЫ ВЫДАЧИ МОНЕТ (основатель)
 # ============================================================
+
+# /addcoins @user сумма
 @dp.message(Command("addcoins"))
 async def addcoins_cmd(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -822,6 +819,43 @@ async def addcoins_cmd(message: types.Message):
     if not uid: return await message.reply("❌ Пользователь не найден.")
     add_coins(uid, amount)
     await message.reply(f"✅ {user_link(uid, message.chat.id, name)} получил {amount} монет.")
+
+# !give @user сумма (альтернативная команда)
+@dp.message(F.text.lower().regexp(r'^!\s*give\s+'))
+async def give_cmd(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return await message.reply("❌ Только для основателя!")
+    
+    # Убираем !give из текста
+    text = re.sub(r'^!\s*give\s+', '', message.text, flags=re.IGNORECASE).strip()
+    if not text:
+        return await message.reply("❌ Использование: !give @user 1000")
+    
+    # Ищем @username и сумму
+    parts = text.split()
+    target = None
+    amount = None
+    
+    for part in parts:
+        if part.startswith("@"):
+            target = part
+        else:
+            try:
+                amount = int(part)
+            except:
+                pass
+    
+    if not target:
+        return await message.reply("❌ Укажи @username пользователя!")
+    if not amount:
+        return await message.reply("❌ Укажи сумму для выдачи!")
+    
+    uid, name, _ = await resolve_target(message, target)
+    if not uid:
+        return await message.reply("❌ Пользователь не найден!")
+    
+    add_coins(uid, amount)
+    await message.reply(f"✅ {user_link(uid, message.chat.id, name)} получил {amount} монет от основателя!")
 
 # ============================================================
 #  ИГРЫ — ФИКС ВЕТОК + reply
@@ -919,7 +953,7 @@ async def rps_cmd(message: types.Message):
                            reply_to_message_id=message.message_id)
 
 # ============================================================
-#  ДУЭЛИ — ФИКС ВЕТОК + reply
+#  ДУЭЛИ
 # ============================================================
 active_duels: dict = {}
 DUEL_GAMES = {
@@ -1025,7 +1059,6 @@ async def get_gender(uid,name):
     return g
 
 async def send_welcome_message(chat_id, member, thread_id):
-    """Отправляет приветствие в зависимости от типа (текст/фото/гиф/видео)"""
     r = db("SELECT welcome_text, welcome_type, welcome_file_id FROM group_welcome WHERE chat_id=?",
            (chat_id,), fetch=True)
     
@@ -1053,32 +1086,24 @@ async def send_welcome_message(chat_id, member, thread_id):
     try:
         if welcome_type == "text" or not file_id:
             await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
-        
         elif welcome_type == "photo":
             await bot.send_photo(chat_id, file_id, caption=caption, message_thread_id=thread_id)
-        
         elif welcome_type in ["animation", "gif"]:
             await bot.send_animation(chat_id, file_id, caption=caption, message_thread_id=thread_id)
-        
         elif welcome_type == "video":
             await bot.send_video(chat_id, file_id, caption=caption, message_thread_id=thread_id)
-        
         elif welcome_type == "sticker":
             await bot.send_sticker(chat_id, file_id, message_thread_id=thread_id)
             if caption and caption != welcome_text:
                 await bot.send_message(chat_id, caption, message_thread_id=thread_id)
-        
         elif welcome_type == "voice":
             await bot.send_voice(chat_id, file_id, caption=caption, message_thread_id=thread_id)
-        
         elif welcome_type == "video_note":
             await bot.send_video_note(chat_id, file_id, message_thread_id=thread_id)
             if caption and caption != welcome_text:
                 await bot.send_message(chat_id, caption, message_thread_id=thread_id)
-        
         else:
             await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
-    
     except Exception as e:
         logging.error(f"Ошибка отправки приветствия: {e}")
         try:
@@ -1096,7 +1121,7 @@ async def welcome_new(message: types.Message):
         await send_welcome_message(cid, member, message.message_thread_id)
 
 # ============================================================
-#  /setwelcome — ИСПРАВЛЕННАЯ ВЕРСИЯ
+#  /setwelcome — ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
 # ============================================================
 
 @dp.message(Command("setwelcome"))
@@ -1119,12 +1144,13 @@ async def set_welcome_cmd(message: types.Message, state: FSMContext):
     
     # Получаем текст после команды (если есть)
     full_text = message.text or message.caption or ""
-    text_after = re.sub(r'^/\s*setwelcome\s*', '', full_text, flags=re.IGNORECASE).strip()
+    # Убираем /setwelcome и всё что до него
+    text_after = re.sub(r'.*?/setwelcome\s*', '', full_text, flags=re.IGNORECASE).strip()
     
     # Если есть медиа ИЛИ есть текст после команды - сохраняем сразу
     if has_media or text_after:
         caption = text_after if text_after else (message.caption or "")
-        await save_welcome_from_message(message, caption, state)
+        await save_welcome_from_message(message, caption)
         return
     
     # Если ничего нет — ждём следующее сообщение
@@ -1149,20 +1175,18 @@ async def set_welcome_receive(message: types.Message, state: FSMContext):
         await state.clear()
         return
     
-    # Проверяем, не команда ли это другая
+    # Если это другая команда — отменяем
     if message.text and message.text.startswith('/'):
         await state.clear()
-        return await message.reply("❌ Установка приветствия отменена.")
+        return
     
     caption = message.text or message.caption or ""
-    await save_welcome_from_message(message, caption, state)
+    await save_welcome_from_message(message, caption)
+    await state.clear()
 
 
-async def save_welcome_from_message(message: types.Message, caption: str, state: FSMContext = None):
+async def save_welcome_from_message(message: types.Message, caption: str):
     """Сохраняет приветствие из сообщения"""
-    if state:
-        await state.clear()
-    
     chat_id = message.chat.id
     welcome_type = "text"
     file_id = None
@@ -1170,7 +1194,7 @@ async def save_welcome_from_message(message: types.Message, caption: str, state:
     # Определяем тип контента
     if message.photo:
         welcome_type = "photo"
-        file_id = message.photo[-1].file_id  # Самое большое разрешение
+        file_id = message.photo[-1].file_id
     elif message.animation:
         welcome_type = "animation"
         file_id = message.animation.file_id
@@ -1691,8 +1715,8 @@ async def main():
     except Exception as e: logging.warning(f"Commands: {e}")
     me=await bot.get_me()
     print(f"✅ @{me.username} запущен! v5-final")
-    print("   ✅ /setwelcome исправлен — нет двойных ответов")
-    print("   ✅ Можно в том же сообщении или следующим")
+    print("   ✅ /setwelcome полностью исправлен")
+    print("   ✅ !give @user сумма — для основателя")
     try:
         for (cid,) in db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL",fetch=True):
             await apply_schedule_now(cid)
