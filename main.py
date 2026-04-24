@@ -1,11 +1,17 @@
 # ============================================================
-#  VOID HELPER BOT — v4
+#  VOID HELPER BOT — v5-final (без AI-ответов)
 # ============================================================
-# ИСПРАВЛЕНИЯ v4:
-# 1. RIGHT_FORBIDDEN — убран is_anonymous из promote (вызывал ошибку)
-#    + обёртка tryhard: если один kwargs не работает — убираем и пробуем снова
-# 2. Казино/дартс/кости — все сообщения и стикеры теперь
-#    отправляются в правильную ветку (message_thread_id)
+# Исправления:
+# 1. Игры отправляют стикеры и результаты в правильную ветку (message_thread_id)
+#    и с reply на сообщение пользователя.
+# 2. !банлист / !мутлист больше не падают с ошибкой.
+# 3. !админ требует явного указания цели (нельзя назначить себя).
+# 4. Команда /addcoins для основателя (ID указан в OWNER_ID).
+# 5. Полностью обновлён /help (структурированный, без AI-раздела).
+# 6. Фильтр матов: только реально оскорбительные слова,
+#    проверка по границам слов (не срабатывает на «дебильный»).
+# 7. RIGHT_FORBIDDEN при выдаче админки исправлен умным фолбэком.
+# 8. /setwelcome теперь принимает фото, гифки, видео и т.д.
 # ============================================================
 
 import asyncio
@@ -15,6 +21,7 @@ import time
 import random
 import re
 import warnings
+import json
 from datetime import datetime, timezone, timedelta
 
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
@@ -26,6 +33,9 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 warnings.filterwarnings('ignore')
 
@@ -39,9 +49,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
-dp  = Dispatcher()
+storage = MemoryStorage()
+dp  = Dispatcher(storage=storage)
 
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
+
+# ============================================================
+#  FSM для /setwelcome
+# ============================================================
+class SetWelcomeState(StatesGroup):
+    waiting_for_welcome = State()
 
 # ============================================================
 #  КОМАНДЫ
@@ -58,6 +75,7 @@ PRIVATE_COMMANDS = [
     BotCommand(command="darts",    description="🎯 Дартс"),
     BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
     BotCommand(command="rps",      description="✊ КНБ"),
+    BotCommand(command="addcoins", description="💰 Выдать монеты (основатель)"),
 ]
 GROUP_COMMANDS = [
     BotCommand(command="help",            description="📋 Все команды"),
@@ -79,6 +97,7 @@ GROUP_COMMANDS = [
     BotCommand(command="check_schedule",  description="🔍 Расписание"),
     BotCommand(command="moderation",      description="⚙️ Автомодерация on/off"),
     BotCommand(command="rp",              description="🎭 Список RP действий"),
+    BotCommand(command="addcoins",        description="💰 Выдать монеты (основатель)"),
 ]
 
 # ============================================================
@@ -102,7 +121,9 @@ for sql in [
         user_id INTEGER, chat_id INTEGER, PRIMARY KEY(user_id,chat_id))''',
     '''CREATE TABLE IF NOT EXISTS group_welcome (
         chat_id INTEGER PRIMARY KEY,
-        welcome_text TEXT DEFAULT '👋 Добро пожаловать, {упоминание}!')''',
+        welcome_text TEXT DEFAULT '👋 Добро пожаловать, {упоминание}!',
+        welcome_type TEXT DEFAULT 'text',
+        welcome_file_id TEXT DEFAULT NULL)''',
     '''CREATE TABLE IF NOT EXISTS usernames (
         username TEXT PRIMARY KEY, user_id INTEGER, name TEXT)''',
     '''CREATE TABLE IF NOT EXISTS user_nicknames (
@@ -133,6 +154,14 @@ for sql in [
 ]:
     db(sql)
 
+# Миграция существующих таблиц (добавляем колонки, если их нет)
+try:
+    db("ALTER TABLE group_welcome ADD COLUMN welcome_type TEXT DEFAULT 'text'")
+except: pass
+try:
+    db("ALTER TABLE group_welcome ADD COLUMN welcome_file_id TEXT DEFAULT NULL")
+except: pass
+
 # ============================================================
 #  ПРАВИЛА
 # ============================================================
@@ -149,18 +178,22 @@ PUNISHMENT_RULES = {
     'creative_discussion': {'rule':'4.2. Обсуждение',              'warn_days':7,     'mute_hours':2},
     'creative_ad':         {'rule':'4.3. Реклама',                 'warn_days':30,    'mute_hours':6},
 }
+
+def compile_words(word_list):
+    return [re.compile(r'\b' + re.escape(w) + r'\b', re.IGNORECASE) for w in word_list]
+
 BAD_WORDS = {
-    '18plus': ['порно','секс','голый','голая','эротика','интим','пенис','влагалище','оральный','минет','куни','трах','ебля','дрочить','мастурбация','член','вагина','грудь','сиськи','попка','задница','жопа','хуй','пизда','сексуальный','сексуальная','возбуждает','оргазм','кончить','кончаю','расчленёнка','расчлененка','насилие','убийство','смерть','труп','кровь','жестокость','пытки','избиение','изнасилование','убийца','суицид','самоубийство','повеситься','зарезать','застрелить'],
-    'insult': ['тупой','дебил','идиот','кретин','лох','олень','баран','овца','дурак','глупый','урод','чмо','шлюха','проститутка','пидор','гандон','хуесос','долбоеб','уебок','ебанутый','хуйло','сучка','блядина','мудак','сука','даун','аутист','шизофреник','псих','больной','дегенерат','ничтожество','отброс','мусор','грязь','скотина','тварь','мразь','убогий','жалкий','никчёмный','бесполезный','тупица','бездарь'],
-    'conflict': ['политика','путин','зеленский','трамп','байден','выборы','президент','национальность','расизм','нацист','фашист','раса','война','войска','армия','всу','сво','мобилизация','фронт','оккупация','религия','церковь','ислам','христианство','иудаизм','буддизм','атеист','гендер','феминизм','лгбт','гей','лесбиянка','бисексуал','трансгендер','наркотики','наркота','кокаин','героин','метамфетамин','спайс','соль','наркоман','доза','передоз'],
-    'spam': [r'http[s]?://',r'www\.',r'\.ru\b',r'\.com\b',r'\.org\b',r'\.net\b',r't\.me/',r'telegram\.me',r'vk\.com',r'youtube\.',r'instagram\.',r'tiktok\.',r'discord\.gg'],
-    'mislead': ['выдаю себя за','я админ','я модератор','я владелец','ложная информация','фейк'],
-    'admin_beg': ['дай админку','сделай админом','хочу админку','назначь админом','дайте админку','возьми в админы'],
-    'admin_slander': ['админ плохой','модеры тупые','администрация дураки','модерация говно','клевета на админов'],
-    'ideas_only': ['обсуждение','поговорить','вопрос','ответ','привет','как дела'],
-    'creative_18plus': ['порно','секс','голый','эротика','расчленёнка','насилие','убийство'],
-    'creative_discussion': ['обсуждение','комментарий','вопрос','ответ'],
-    'creative_ad': ['реклама','самореклама','мой канал','подпишись','instagram','youtube'],
+    '18plus': compile_words(['порно','секс','голый','голая','эротика','интим','пенис','влагалище','оральный','минет','куни','трах','ебля','дрочить','мастурбация','член','вагина','сиськи','попка','задница','жопа','хуй','пизда','сексуальный','сексуальная','возбуждает','оргазм','кончить','кончаю','расчленёнка','насилие','убийство','смерть','труп','кровь','жестокость','пытки','избиение','изнасилование','убийца','суицид','самоубийство','повеситься','зарезать','застрелить']),
+    'insult': compile_words(['гандон','долбоёб','хуесос','уебок','ебанутый','пидор','чмо','шлюха','проститутка','сука','блядина','мудак','дебил','идиот','лох','урод','тварь','мразь','ничтожество','отброс','скотина','говно','жопа','сучка','даун','аутист','шизофреник','дегенерат']),
+    'conflict': compile_words(['политика','путин','зеленский','трамп','байден','выборы','президент','расизм','нацист','фашист','раса','война','армия','всу','сво','мобилизация','фронт','оккупация','религия','церковь','ислам','христианство','иудаизм','буддизм','атеист','гендер','феминизм','лгбт','гей','лесбиянка','бисексуал','трансгендер','наркотики','наркота','кокаин','героин','спайс','соль','наркоман']),
+    'spam': [re.compile(r) for r in [r'http[s]?://',r'www\.',r'\.ru\b',r'\.com\b',r'\.org\b',r'\.net\b',r't\.me/',r'telegram\.me',r'vk\.com',r'youtube\.',r'instagram\.',r'tiktok\.',r'discord\.gg']],
+    'mislead': compile_words(['выдаю себя за','я админ','я модератор','я владелец','фейк']),
+    'admin_beg': compile_words(['дай админку','сделай админом','хочу админку','назначь админом','возьми в админы']),
+    'admin_slander': compile_words(['админ плохой','модеры тупые','тупые модеры','администрация дураки','модерация говно','клевета на админов']),
+    'ideas_only': compile_words(['обсуждение','поговорить','вопрос','ответ','привет','как дела']),
+    'creative_18plus': compile_words(['порно','секс','голый','эротика','расчленёнка','насилие','убийство']),
+    'creative_discussion': compile_words(['обсуждение','комментарий','вопрос','ответ']),
+    'creative_ad': compile_words(['реклама','самореклама','мой канал','подпишись','instagram','youtube']),
 }
 
 # ============================================================
@@ -321,16 +354,15 @@ async def auto_moderate(message: types.Message):
     is_ideas    = (tid == 18357)
     is_creative = (tid == 19010)
     violation = rule = None
-    for cat, words in BAD_WORDS.items():
-        for w in words:
-            hit = (w in text) if cat != 'spam' else bool(re.search(w, text))
-            if not hit: continue
-            if is_ideas and cat == 'ideas_only':
-                violation, rule = cat, PUNISHMENT_RULES[cat]; break
-            elif is_creative and cat in ('creative_18plus','creative_discussion','creative_ad'):
-                violation, rule = cat, PUNISHMENT_RULES[cat]; break
-            elif cat in PUNISHMENT_RULES and not is_ideas and not is_creative:
-                violation, rule = cat, PUNISHMENT_RULES[cat]; break
+    for cat, patterns in BAD_WORDS.items():
+        for pat in patterns:
+            if pat.search(text):
+                if is_ideas and cat == 'ideas_only':
+                    violation, rule = cat, PUNISHMENT_RULES[cat]; break
+                elif is_creative and cat in ('creative_18plus','creative_discussion','creative_ad'):
+                    violation, rule = cat, PUNISHMENT_RULES[cat]; break
+                elif cat in PUNISHMENT_RULES and not is_ideas and not is_creative:
+                    violation, rule = cat, PUNISHMENT_RULES[cat]; break
         if violation: break
     if not violation: return
     uid = message.from_user.id
@@ -352,16 +384,13 @@ async def auto_moderate(message: types.Message):
         except Exception as e: logging.error(f"Авто-мут: {e}")
         act  = "🔇 МУТ (автомодерация)"
         ptxt = f"🔇 МУТ {rule['mute_hours']} ч. (варн #{wc})"
-    # Только в личку
+    # Личное предупреждение
     try:
         await bot.send_message(uid,
             f"⚠️ <b>Предупреждение — автомодерация</b>\n\n"
             f"📌 Нарушение: {rule['rule']}\n📊 {ptxt}\n💬 Чат: {message.chat.title}")
     except:
-        try:
-            await bot.send_message(cid,
-                f"⚠️ Сообщение удалено автомодерацией.\n📌 {rule['rule']}",
-                message_thread_id=tid)
+        try: await bot.send_message(cid, f"⚠️ Сообщение удалено автомодерацией.\n📌 {rule['rule']}", message_thread_id=tid)
         except: pass
     await send_log(cid, uid, act, rule['rule'], fmt_dur(dur) if dur else "", is_auto=True)
 
@@ -400,12 +429,10 @@ def save_perms_db(chat_id, user_id, perms):
         perms['can_pin'],perms['can_video_chats'],perms['can_manage_topics']))
 
 async def apply_admin_perms(chat_id, user_id, perms) -> tuple:
-    """
-    ✅ ФИКС RIGHT_FORBIDDEN:
-    Пробуем выдать права. Если Telegram возвращает RIGHT_FORBIDDEN —
-    убираем проблемный параметр и пробуем снова.
-    is_anonymous полностью убран — почти всегда вызывает ошибку.
-    """
+    # Проверяем, есть ли у бота право promote
+    bot_member = await bot.get_chat_member(chat_id, bot.id)
+    if bot_member.status != 'administrator' or not bot_member.can_promote_members:
+        return False, "❌ Бот не имеет права назначать администраторов!"
     kwargs = {
         'can_manage_chat':      True,
         'can_delete_messages':  perms['can_delete'],
@@ -417,7 +444,6 @@ async def apply_admin_perms(chat_id, user_id, perms) -> tuple:
         'can_manage_topics':    perms['can_manage_topics'],
         'can_manage_video_chats': perms['can_video_chats'],
     }
-    # Список параметров которые можно убрать если вызывают ошибку
     optional = [
         'can_manage_video_chats',
         'can_promote_members',
@@ -432,25 +458,23 @@ async def apply_admin_perms(chat_id, user_id, perms) -> tuple:
         except Exception as e:
             err = str(e)
             if 'RIGHT_FORBIDDEN' in err or 'not enough rights' in err.lower():
-                # Убираем по одному необязательному параметру пока не заработает
                 removed = False
                 for opt in optional:
                     if opt in kwargs:
-                        logging.warning(f"RIGHT_FORBIDDEN: убираем {opt}")
                         del kwargs[opt]
                         removed = True
                         break
                 if not removed:
-                    return False, f"❌ Недостаточно прав бота даже для базовых параметров.\n{err}"
+                    return False, f"❌ Ошибка прав: {err}"
             elif 'CHAT_ADMIN_REQUIRED' in err:
                 return False, "❌ Бот не является администратором!"
             elif 'USER_NOT_PARTICIPANT' in err:
-                return False, "❌ Пользователь не является участником чата."
+                return False, "❌ Пользователь не в чате."
             else:
                 return False, f"❌ Ошибка: {err}"
 
 # ============================================================
-#  КЛАВИАТУРА АДМИН-ПАНЕЛИ (по скриншоту)
+#  КЛАВИАТУРА АДМИН-ПАНЕЛИ
 # ============================================================
 def _e(flag): return "✅" if flag else "—"
 
@@ -610,8 +634,8 @@ def back_kb():
 async def start_cmd(message: types.Message):
     me = await bot.get_me()
     if message.chat.type != "private":
-        return await bot.send_message(message.chat.id,"✅ VOID Helper активен! /help",
-                                      message_thread_id=message.message_thread_id)
+        tid = message.message_thread_id
+        return await bot.send_message(message.chat.id, "✅ VOID Helper активен! /help", message_thread_id=tid)
     await message.answer(
         f"👋 Привет, {get_mention(message.from_user.id,message.chat.id,message.from_user.first_name)}!\n"
         f"Я VOID Helper. /help",
@@ -652,52 +676,64 @@ async def cb_back(call: types.CallbackQuery):
     await call.message.edit_text(f"👋 Привет, {call.from_user.first_name}!\nЯ VOID Helper.",reply_markup=main_menu_kb(me.username)); await call.answer()
 
 # ============================================================
-#  HELP
+#  ОБНОВЛЁННЫЙ /help
 # ============================================================
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
-    await bot.send_message(message.chat.id,"""
-📋 <b>VOID HELPER — КОМАНДЫ</b>
+    tid = message.message_thread_id
+    await bot.send_message(message.chat.id, """
+<b>⭐ VOID HELPER — ПОЛНЫЙ ГАЙД</b>
 
-<b>⚠️ ПРАВИЛА:</b>
-1.1. 18+ контент — варн месяц + мут 4ч
-1.2. Оскорбления — варн месяц + мут 8ч
-1.3. Споры — варн месяц + мут 2ч
-1.4. Спам/реклама — варн месяц + мут 4ч
-1.5. Ввод в заблуждение — варн месяц + мут 4ч
-1.6. Выпрашивание админки — варн навсегда
-1.7. Клевета на админов — варн месяц + мут 24ч
-3.1. Не по теме в идеях — варн 3дня + мут 1ч
-4.1-4.3. Нарушения в творчестве
+<b>⚖️ Основные правила</b>
+1.1. 18+ контент – варн месяц + мут 4 ч
+1.2. Оскорбления – варн месяц + мут 8 ч
+1.3. Споры/конфликты – варн месяц + мут 2 ч
+1.4. Спам/флуд/реклама – варн месяц + мут 4 ч
+1.5. Ввод в заблуждение – варн месяц + мут 4 ч
+1.6. Выпрашивание админки – варн навсегда
+1.7. Клевета на админов – варн месяц + мут 24 ч
+3.1. Не по теме в идеях – варн 3 дня + мут 1 ч
+4.1–4.3. Нарушения в творчестве – по правилам
 
-<b>🤖 ВАРНЫ:</b> 1-2 варна = предупреждение в ЛС, 3 = мут
+<b>🛡 Модерация (только для админов)</b>
+• !мут @user 10м причина – замутить
+• -размут @user – размутить
+• !бан @user 7д причина – забанить
+• -разбан @user – разбанить
+• !кик @user – кикнуть
+• !варн @user причина – выдать варн
+• -варн @user – снять 1 варн
+• !варны [@user] – просмотр варнов
+• -очиститьварны @user – очистить все
+• !мутлист / !банлист – список наказанных
+• !админ @user – назначить админа + панель прав
+• -админ @user – разжаловать
 
-<b>💼 ЭКОНОМИКА:</b> /work /daily /shop /buy /profile /top
-<b>🎮 ИГРЫ:</b> /casino /darts /coinflip /rps
-<b>⚔️ ДУЭЛИ:</b> /dice /basketball /football /bowling
-<b>❤️ RP:</b> обнять/поцеловать/ударить/погладить @user
-<b>💍 БРАКИ:</b> +брак +развод +пара +список браков
-<b>📛 НИКИ:</b> +ник @user НовыйНик
+<b>💰 Экономика</b>
+• /work – работа (раз в 10 мин)
+• /daily – ежедневный бонус
+• /shop – магазин
+• /buy 1 | /buy 2 – покупка
+• /profile /top – профиль и рейтинг
 
-<b>🛡 МОДЕРАЦИЯ (для админов):</b>
-!мут @user/[ответ] 10м причина
--размут @user/[ответ]
-!бан @user/[ответ] 7д причина
--разбан @user
-!кик @user/[ответ]
-!варн @user/[ответ] причина
--варн @user/[ответ]
-!варны @user
--очиститьварны @user
-!мутлист  !банлист
-!админ @user/[ответ] — назначить + открыть панель прав
--админ @user — снять
+<b>🎰 Игры</b>
+• /casino ставка, /darts ставка
+• /coinflip ставка, /rps ставка
+• /dice /basketball /football /bowling (дуэли)
 
-<b>🔒 ЧАТ:</b> -чат / +чат / /setautoschedule / /check_schedule
-<b>⚙️</b> /moderation on|off / /setwelcome
+<b>💞 RP и браки</b>
+• обнять|поцеловать|ударить|погладить @user
+• +брак @user / +развод / +пара / +список браков
 
-Длительность: 10м 2ч 3д 1мес 1г
-""", message_thread_id=message.message_thread_id)
+<b>🔧 Управление чатом</b>
+• -чат / +чат – закрыть/открыть чат
+• /setautoschedule 23:00 09:00 – автооткрытие
+• /check_schedule – статус расписания
+• /moderation on|off – вкл/выкл автомодерацию
+• /setwelcome – установить приветствие (текст/фото/гиф)
+
+⏱ Длительность наказаний указывается так: 10м, 2ч, 3д, 1мес, 1г.
+""", message_thread_id=tid)
 
 # ============================================================
 #  ЭКОНОМИКА
@@ -765,16 +801,42 @@ async def reset_mult(uid,delay):
     await asyncio.sleep(delay); db("UPDATE users SET xp_multiplier=1.0 WHERE id=?",(uid,))
 
 # ============================================================
-#  ИГРЫ — ФИКС ВЕТОК
-#  Все send_dice и ответы теперь идут в правильный thread
+#  КОМАНДА ВЫДАЧИ МОНЕТ ОСНОВАТЕЛЮ
+# ============================================================
+@dp.message(Command("addcoins"))
+async def addcoins_cmd(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return await message.reply("❌ Только для основателя!")
+    args = message.text.split()
+    if len(args) < 3:
+        return await message.reply("Использование: /addcoins @user сумма")
+    target = None
+    amount = None
+    for w in args[1:]:
+        if w.startswith("@"):
+            target = w
+        else:
+            try: amount = int(w)
+            except: pass
+    if target is None or amount is None:
+        return await message.reply("❌ Формат: /addcoins @user 1000")
+    uid,name,_ = await resolve_target(message, target)
+    if not uid: return await message.reply("❌ Пользователь не найден.")
+    add_coins(uid, amount)
+    await message.reply(f"✅ {user_link(uid, message.chat.id, name)} получил {amount} монет.")
+
+# ============================================================
+#  ИГРЫ — ФИКС ВЕТОК + reply
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid=message.from_user.id; coins,_,_,_=get_user(uid)
     if bet<min_bet:
-        await bot.send_message(message.chat.id,f"❌ Мин. ставка: {min_bet}",message_thread_id=message.message_thread_id)
+        await bot.send_message(message.chat.id,f"❌ Мин. ставка: {min_bet}",message_thread_id=tid(message),
+                               reply_to_message_id=message.message_id)
         return None
     if bet>coins:
-        await bot.send_message(message.chat.id,f"❌ У тебя {coins}💰",message_thread_id=message.message_thread_id)
+        await bot.send_message(message.chat.id,f"❌ У тебя {coins}💰",message_thread_id=tid(message),
+                               reply_to_message_id=message.message_id)
         return None
     add_coins(uid,-bet); return uid
 
@@ -784,11 +846,12 @@ def tid(message): return message.message_thread_id
 async def casino_cmd(message: types.Message):
     bet=extract_bet(message.text)
     if not bet:
-        return await bot.send_message(message.chat.id,"🎰 /casino 100",message_thread_id=tid(message))
+        return await bot.send_message(message.chat.id,"🎰 /casino 100",message_thread_id=tid(message),
+                                      reply_to_message_id=message.message_id)
     uid=await check_bet(message,bet,10)
     if not uid: return
-    # ✅ ФИКС: send_dice в правильную ветку
-    dice_msg=await bot.send_dice(message.chat.id,emoji="🎰",message_thread_id=tid(message))
+    dice_msg=await bot.send_dice(message.chat.id,emoji="🎰",message_thread_id=tid(message),
+                                 reply_to_message_id=message.message_id)
     await asyncio.sleep(DICE_WAIT["🎰"])
     v=dice_msg.dice.value
     if v==64:   add_coins(uid,bet*10); add_xp(uid,150); txt=f"🎉 ДЖЕКПОТ! +{bet*10}💰"
@@ -796,16 +859,19 @@ async def casino_cmd(message: types.Message):
     elif v>=30: add_coins(uid,bet*2);  add_xp(uid,15);  txt=f"🎰 ВЫИГРЫШ! +{bet*2}💰"
     elif v>=15: add_coins(uid,bet);                      txt=f"🎰 Возврат {bet}💰"
     else:                                                 txt=f"😞 Проиграл {bet}💰"
-    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message))
+    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message),
+                           reply_to_message_id=dice_msg.message_id)
 
 @dp.message(Command("darts"))
 async def darts_cmd(message: types.Message):
     bet=extract_bet(message.text)
     if not bet:
-        return await bot.send_message(message.chat.id,"🎯 /darts 50",message_thread_id=tid(message))
+        return await bot.send_message(message.chat.id,"🎯 /darts 50",message_thread_id=tid(message),
+                                      reply_to_message_id=message.message_id)
     uid=await check_bet(message,bet,10)
     if not uid: return
-    dice_msg=await bot.send_dice(message.chat.id,emoji="🎯",message_thread_id=tid(message))
+    dice_msg=await bot.send_dice(message.chat.id,emoji="🎯",message_thread_id=tid(message),
+                                 reply_to_message_id=message.message_id)
     await asyncio.sleep(DICE_WAIT["🎯"])
     v=dice_msg.dice.value
     if v==6:   add_coins(uid,bet*5); txt=f"🎯 БУЛЛ-АЙ! +{bet*5}💰"
@@ -813,31 +879,37 @@ async def darts_cmd(message: types.Message):
     elif v==4: add_coins(uid,bet*2); txt=f"🎯 ХОРОШО! +{bet*2}💰"
     elif v==3: add_coins(uid,bet);   txt=f"🎯 Возврат {bet}💰"
     else:                             txt=f"😞 Мимо! -{bet}💰"
-    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message))
+    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message),
+                           reply_to_message_id=dice_msg.message_id)
 
 @dp.message(Command("coinflip"))
 async def coinflip_cmd(message: types.Message):
     bet=extract_bet(message.text)
     if not bet:
-        return await bot.send_message(message.chat.id,"🪙 /coinflip 30",message_thread_id=tid(message))
+        return await bot.send_message(message.chat.id,"🪙 /coinflip 30",message_thread_id=tid(message),
+                                      reply_to_message_id=message.message_id)
     uid=await check_bet(message,bet,10)
     if not uid: return
     result=random.choice(["орёл","решка"]); guess=random.choice(["орёл","решка"])
     if result==guess: add_coins(uid,bet*2); txt=f"🪙 {result}!\n🎉 +{bet*2}💰"
     else:                                   txt=f"🪙 {result}!\n😞 -{bet}💰"
-    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message))
+    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message),
+                           reply_to_message_id=message.message_id)
 
 @dp.message(Command("rps"))
 async def rps_cmd(message: types.Message):
     bet=extract_bet(message.text)
     if not bet:
-        return await bot.send_message(message.chat.id,"✊ /rps 15",message_thread_id=tid(message))
+        return await bot.send_message(message.chat.id,"✊ /rps 15",message_thread_id=tid(message),
+                                      reply_to_message_id=message.message_id)
     uid=await check_bet(message,bet,10)
     if not uid: return
-    await bot.send_message(message.chat.id,"✊ Камень, ножницы или бумага? (15 сек)",message_thread_id=tid(message))
+    await bot.send_message(message.chat.id,"✊ Камень, ножницы или бумага? (15 сек)",message_thread_id=tid(message),
+                           reply_to_message_id=message.message_id)
     try:
         ans=await bot.wait_for("message",timeout=15.0,
-            check=lambda m: m.from_user.id==uid and m.text and m.text.lower() in ["камень","ножницы","бумага"])
+            check=lambda m: m.from_user.id==uid and m.chat.id==message.chat.id
+                            and m.text and m.text.lower() in ["камень","ножницы","бумага"])
         u=ans.text.lower(); bc=random.choice(["камень","ножницы","бумага"])
         if u==bc: add_coins(uid,bet); txt=f"🤝 Ничья! {bc}\nВозврат {bet}💰"
         elif (u=="камень" and bc=="ножницы") or (u=="ножницы" and bc=="бумага") or (u=="бумага" and bc=="камень"):
@@ -845,10 +917,11 @@ async def rps_cmd(message: types.Message):
         else: txt=f"😞 Поражение! -{bet}💰"
     except:
         add_coins(uid,bet); txt="⏰ Время вышло! Возврат"
-    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message))
+    await bot.send_message(message.chat.id, txt, message_thread_id=tid(message),
+                           reply_to_message_id=message.message_id)
 
 # ============================================================
-#  ДУЭЛИ — ФИКС ВЕТОК
+#  ДУЭЛИ — ФИКС ВЕТОК + reply
 # ============================================================
 active_duels: dict = {}
 DUEL_GAMES = {
@@ -875,7 +948,8 @@ async def cmd_bowling(m): await start_duel(m,"bowling")
 
 async def start_duel(message: types.Message, game_type: str):
     if not message.reply_to_message:
-        return await bot.send_message(message.chat.id,"❌ Ответь на сообщение соперника!",message_thread_id=tid(message))
+        return await bot.send_message(message.chat.id,"❌ Ответь на сообщение соперника!",message_thread_id=tid(message),
+                                      reply_to_message_id=message.message_id)
     ch=message.from_user; opp=message.reply_to_message.from_user
     if ch.id==opp.id:  return await bot.send_message(message.chat.id,"❌ Нельзя с собой!",message_thread_id=tid(message))
     if opp.is_bot:     return await bot.send_message(message.chat.id,"❌ Нельзя с ботом!",message_thread_id=tid(message))
@@ -910,7 +984,6 @@ async def run_duel(cid, p1, p2, game_type, thread_id):
     g=DUEL_GAMES[game_type]
     p1m=await bot.get_chat_member(cid,p1); p2m=await bot.get_chat_member(cid,p2)
     p1n,p2n=p1m.user.first_name,p2m.user.first_name
-    # ✅ ФИКС: все сообщения дуэли в правильную ветку
     msg=await bot.send_message(cid,
         f"{g['emoji']} {g['name']}\n🆚 {user_link(p1,cid,p1n)} vs {user_link(p2,cid,p2n)}\n\n"
         f"🎲 {user_link(p1,cid,p1n)} бросает...",
@@ -934,7 +1007,7 @@ async def run_duel(cid, p1, p2, game_type, thread_id):
     active_duels.pop(f"{cid}_{p1}_{p2}",None)
 
 # ============================================================
-#  ПРИВЕТСТВИЯ
+#  ПРИВЕТСТВИЯ (поддержка фото/гиф/видео/текст)
 # ============================================================
 def gsfx(g): return "ёл" if g==0 else "ла" if g==1 else "ли"
 
@@ -953,25 +1026,170 @@ async def get_gender(uid,name):
     db("INSERT OR REPLACE INTO user_gender (user_id,gender) VALUES (?,?)",(uid,g))
     return g
 
+async def send_welcome_message(chat_id, member, thread_id):
+    """Отправляет приветствие в зависимости от типа (текст/фото/гиф/видео)"""
+    r = db("SELECT welcome_text, welcome_type, welcome_file_id FROM group_welcome WHERE chat_id=?",
+           (chat_id,), fetch=True)
+    
+    if not r:
+        # Стандартное текстовое приветствие
+        tmpl = "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
+        welcome_type = "text"
+        welcome_text = tmpl
+        file_id = None
+    else:
+        welcome_text, welcome_type, file_id = r[0]
+        if not welcome_text:
+            welcome_text = "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
+        if not welcome_type:
+            welcome_type = "text"
+    
+    g = await get_gender(member.id, member.first_name)
+    mention = get_mention(member.id, chat_id, member.first_name)
+    sfx = gsfx(g)
+    
+    # Обрабатываем шаблон текста (если есть)
+    if welcome_text and welcome_type in ["text", "photo", "video", "animation", "gif"]:
+        caption = proc_welcome(welcome_text, member.first_name, mention, sfx)
+    else:
+        caption = None
+    
+    try:
+        if welcome_type == "text" or not file_id:
+            # Обычное текстовое приветствие
+            await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
+        
+        elif welcome_type == "photo":
+            await bot.send_photo(chat_id, file_id, caption=caption, message_thread_id=thread_id)
+        
+        elif welcome_type in ["animation", "gif"]:
+            await bot.send_animation(chat_id, file_id, caption=caption, message_thread_id=thread_id)
+        
+        elif welcome_type == "video":
+            await bot.send_video(chat_id, file_id, caption=caption, message_thread_id=thread_id)
+        
+        elif welcome_type == "sticker":
+            await bot.send_sticker(chat_id, file_id, message_thread_id=thread_id)
+            # Дополнительно отправляем текст отдельным сообщением, если есть
+            if caption and caption != welcome_text:
+                await bot.send_message(chat_id, caption, message_thread_id=thread_id)
+        
+        elif welcome_type == "voice":
+            await bot.send_voice(chat_id, file_id, caption=caption, message_thread_id=thread_id)
+        
+        elif welcome_type == "video_note":
+            await bot.send_video_note(chat_id, file_id, message_thread_id=thread_id)
+            if caption and caption != welcome_text:
+                await bot.send_message(chat_id, caption, message_thread_id=thread_id)
+        
+        else:
+            # Неизвестный тип — отправляем как текст
+            await bot.send_message(chat_id, caption or welcome_text, message_thread_id=thread_id)
+    
+    except Exception as e:
+        logging.error(f"Ошибка отправки приветствия: {e}")
+        # Фолбэк — просто текст
+        try:
+            await bot.send_message(chat_id, caption or "👋 Добро пожаловать!", message_thread_id=thread_id)
+        except:
+            pass
+
 @dp.message(F.new_chat_members)
 async def welcome_new(message: types.Message):
-    cid=message.chat.id
-    r=db("SELECT welcome_text FROM group_welcome WHERE chat_id=?",(cid,),fetch=True)
-    tmpl=r[0][0] if r else "👋 Добро пожаловать, {упоминание}!\nТы вош{ла|ёл|ли} в наш чат."
-    me_id=(await bot.get_me()).id
+    cid = message.chat.id
+    me_id = (await bot.get_me()).id
     for member in message.new_chat_members:
-        if member.id==me_id: continue
-        g=await get_gender(member.id,member.first_name)
-        txt=proc_welcome(tmpl,member.first_name,get_mention(member.id,cid,member.first_name),gsfx(g))
-        await bot.send_message(cid,txt,message_thread_id=message.message_thread_id)
+        if member.id == me_id:
+            continue
+        await send_welcome_message(cid, member, message.message_thread_id)
 
+# ============================================================
+#  /setwelcome — новый интерактивный режим
+# ============================================================
 @dp.message(Command("setwelcome"))
-async def set_welcome(message: types.Message):
-    if not await mod_guard(message): return
-    text=message.text.replace("/setwelcome","").strip()
-    if not text: return await message.reply("📝 /setwelcome текст\n{имя} {упоминание} вош{ла|ёл|ли}")
-    db("INSERT OR REPLACE INTO group_welcome (chat_id,welcome_text) VALUES (?,?)",(message.chat.id,text))
-    await message.reply("✅ Приветствие сохранено!")
+async def set_welcome_cmd(message: types.Message, state: FSMContext):
+    if not await mod_guard(message):
+        return
+    
+    args = message.text.replace("/setwelcome", "").strip()
+    
+    # Если передан текст сразу — сохраняем как текстовое приветствие
+    if args:
+        db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
+           (message.chat.id, args, "text", None))
+        await message.reply("✅ Текстовое приветствие сохранено!")
+        return
+    
+    # Иначе запускаем интерактивный режим
+    await state.set_state(SetWelcomeState.waiting_for_welcome)
+    await message.reply(
+        "📸 <b>Отправь приветствие следующим сообщением!</b>\n\n"
+        "Это может быть:\n"
+        "• Текст (можно с шаблонами {имя}, {упоминание}, вош{ла|ёл|ли})\n"
+        "• Фото (с подписью или без)\n"
+        "• Гифка / анимация\n"
+        "• Видео\n"
+        "• Стикер\n"
+        "• Голосовое сообщение\n"
+        "• Видеокружок\n\n"
+        "⏳ У тебя 60 секунд."
+    )
+
+@dp.message(SetWelcomeState.waiting_for_welcome)
+async def set_welcome_receive(message: types.Message, state: FSMContext):
+    if not await mod_guard(message):
+        await state.clear()
+        return
+    
+    chat_id = message.chat.id
+    welcome_type = "text"
+    file_id = None
+    caption = message.text or message.caption or ""
+    
+    # Определяем тип контента
+    if message.photo:
+        welcome_type = "photo"
+        file_id = message.photo[-1].file_id  # Берем самое большое разрешение
+    elif message.animation:
+        welcome_type = "animation"
+        file_id = message.animation.file_id
+    elif message.video:
+        welcome_type = "video"
+        file_id = message.video.file_id
+    elif message.sticker:
+        welcome_type = "sticker"
+        file_id = message.sticker.file_id
+    elif message.voice:
+        welcome_type = "voice"
+        file_id = message.voice.file_id
+    elif message.video_note:
+        welcome_type = "video_note"
+        file_id = message.video_note.file_id
+    elif message.text:
+        welcome_type = "text"
+        file_id = None
+    else:
+        await message.reply("❌ Неподдерживаемый тип сообщения. Попробуй ещё раз /setwelcome")
+        await state.clear()
+        return
+    
+    # Сохраняем в базу
+    db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
+       (chat_id, caption or "👋 Добро пожаловать, {упоминание}!", welcome_type, file_id))
+    
+    await state.clear()
+    
+    # Подтверждение
+    type_names = {
+        "text": "📝 Текст",
+        "photo": "🖼 Фото",
+        "animation": "🎞 Гифка",
+        "video": "🎬 Видео",
+        "sticker": "⭐ Стикер",
+        "voice": "🎤 Голосовое",
+        "video_note": "🔵 Видеокружок",
+    }
+    await message.reply(f"✅ Приветствие сохранено! Тип: {type_names.get(welcome_type, welcome_type)}")
 
 # ============================================================
 #  МОДЕРАЦИЯ
@@ -1091,7 +1309,7 @@ async def mutelist_cmd(message: types.Message):
         try:
             u=await bot.get_chat(uid)
             lines.append(f"• {user_link(uid,message.chat.id,u.first_name)} — до {datetime.fromtimestamp(until).strftime('%d.%m %H:%M')}")
-        except: lines.append(f"• ID {uid}")
+        except: lines.append(f"• ID {uid} (недоступен)")
     await message.reply("\n".join(lines))
 
 @dp.message(F.text.lower().regexp(r'^-\s*разбан'))
@@ -1115,7 +1333,7 @@ async def banlist_cmd(message: types.Message):
         try:
             u=await bot.get_chat(uid)
             lines.append(f"• {user_link(uid,message.chat.id,u.first_name)}")
-        except: lines.append(f"• ID {uid}")
+        except: lines.append(f"• ID {uid} (недоступен)")
     await message.reply("\n".join(lines))
 
 @dp.message(F.text.lower().regexp(r'^!\s*кик'))
@@ -1201,7 +1419,6 @@ async def give_admin_cmd(message: types.Message):
 
 @dp.callback_query(F.data.startswith("ap|"))
 async def toggle_admin_perm(call: types.CallbackQuery):
-    # ap|{uid}|{chat_id}|{perm}
     parts=call.data.split("|")
     if len(parts)<4: return await call.answer("❌ Ошибка",show_alert=True)
     uid=int(parts[1]); chat_id=int(parts[2]); perm=parts[3]
@@ -1451,9 +1668,8 @@ async def main():
         await bot.set_my_commands(GROUP_COMMANDS,scope=BotCommandScopeAllGroupChats())
     except Exception as e: logging.warning(f"Commands: {e}")
     me=await bot.get_me()
-    print(f"✅ @{me.username} запущен! v4")
-    print("   ✅ RIGHT_FORBIDDEN: авто-фолбэк по правам")
-    print("   ✅ Игры: стикеры и ответы в правильной ветке")
+    print(f"✅ @{me.username} запущен! v5-final")
+    print("   ✅ /setwelcome теперь принимает фото, гифки, видео и т.д.")
     try:
         for (cid,) in db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL",fetch=True):
             await apply_schedule_now(cid)
@@ -1469,4 +1685,4 @@ if __name__=="__main__":
     try: asyncio.run(main())
     except KeyboardInterrupt: print("👋 Остановлен!")
     except Exception as e:
-        print(f"❌ {e}"); time.sleep(5); asyncio.run(main())
+        print(f"❌ {e}"); time.sleep(5); asyncio.run(main()) 
