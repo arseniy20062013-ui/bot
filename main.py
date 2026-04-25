@@ -1,14 +1,6 @@
 # ============================================================
-#  VOID HELPER BOT — v5-final (полностью исправленный)
+#  VOID HELPER BOT — v5-final (ПОЛНОСТЬЮ ИСПРАВЛЕН)
 # ============================================================
-# Исправления:
-# 1. /setwelcome больше не отвечает дважды
-# 2. /setwelcome текст — сразу сохраняет
-# 3. /setwelcome + медиа в том же сообщении — сразу сохраняет
-# 4. /setwelcome без ничего — ждёт следующее сообщение
-# 5. Добавлена команда !give @user сумма для основателя
-# ============================================================
-
 import asyncio
 import sqlite3
 import logging
@@ -27,9 +19,6 @@ from aiogram.types import (
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 
 warnings.filterwarnings('ignore')
 
@@ -43,16 +32,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
-storage = MemoryStorage()
-dp  = Dispatcher(storage=storage)
+dp  = Dispatcher()
 
 DICE_WAIT = {"🎲": 2, "🎯": 3, "🏀": 4, "⚽": 4, "🎳": 4, "🎰": 4}
-
-# ============================================================
-#  FSM для /setwelcome
-# ============================================================
-class SetWelcomeState(StatesGroup):
-    waiting_for_welcome = State()
 
 # ============================================================
 #  КОМАНДЫ
@@ -69,7 +51,6 @@ PRIVATE_COMMANDS = [
     BotCommand(command="darts",    description="🎯 Дартс"),
     BotCommand(command="coinflip", description="🪙 Орёл/Решка"),
     BotCommand(command="rps",      description="✊ КНБ"),
-    BotCommand(command="addcoins", description="💰 Выдать монеты (основатель)"),
 ]
 GROUP_COMMANDS = [
     BotCommand(command="help",            description="📋 Все команды"),
@@ -91,7 +72,6 @@ GROUP_COMMANDS = [
     BotCommand(command="check_schedule",  description="🔍 Расписание"),
     BotCommand(command="moderation",      description="⚙️ Автомодерация on/off"),
     BotCommand(command="rp",              description="🎭 Список RP действий"),
-    BotCommand(command="addcoins",        description="💰 Выдать монеты (основатель)"),
 ]
 
 # ============================================================
@@ -148,12 +128,10 @@ for sql in [
 ]:
     db(sql)
 
-# Миграция существующих таблиц
-try:
-    db("ALTER TABLE group_welcome ADD COLUMN welcome_type TEXT DEFAULT 'text'")
+# Миграция
+try: db("ALTER TABLE group_welcome ADD COLUMN welcome_type TEXT DEFAULT 'text'")
 except: pass
-try:
-    db("ALTER TABLE group_welcome ADD COLUMN welcome_file_id TEXT DEFAULT NULL")
+try: db("ALTER TABLE group_welcome ADD COLUMN welcome_file_id TEXT DEFAULT NULL")
 except: pass
 
 # ============================================================
@@ -723,7 +701,7 @@ async def help_cmd(message: types.Message):
 • /setautoschedule 23:00 09:00 – автооткрытие
 • /check_schedule – статус расписания
 • /moderation on|off – вкл/выкл автомодерацию
-• /setwelcome – установить приветствие (текст/фото/гиф)
+• /setwelcome текст/фото/гиф – установить приветствие
 
 ⏱ Длительность наказаний указывается так: 10м, 2ч, 3д, 1мес, 1г.
 """, message_thread_id=tid)
@@ -794,44 +772,14 @@ async def reset_mult(uid,delay):
     await asyncio.sleep(delay); db("UPDATE users SET xp_multiplier=1.0 WHERE id=?",(uid,))
 
 # ============================================================
-#  КОМАНДЫ ВЫДАЧИ МОНЕТ (основатель)
+#  !give — выдача монет основателем
 # ============================================================
-
-# /addcoins @user сумма
-@dp.message(Command("addcoins"))
-async def addcoins_cmd(message: types.Message):
-    if message.from_user.id != OWNER_ID:
-        return await message.reply("❌ Только для основателя!")
-    args = message.text.split()
-    if len(args) < 3:
-        return await message.reply("Использование: /addcoins @user сумма")
-    target = None
-    amount = None
-    for w in args[1:]:
-        if w.startswith("@"):
-            target = w
-        else:
-            try: amount = int(w)
-            except: pass
-    if target is None or amount is None:
-        return await message.reply("❌ Формат: /addcoins @user 1000")
-    uid,name,_ = await resolve_target(message, target)
-    if not uid: return await message.reply("❌ Пользователь не найден.")
-    add_coins(uid, amount)
-    await message.reply(f"✅ {user_link(uid, message.chat.id, name)} получил {amount} монет.")
-
-# !give @user сумма (альтернативная команда)
 @dp.message(F.text.lower().regexp(r'^!\s*give\s+'))
 async def give_cmd(message: types.Message):
     if message.from_user.id != OWNER_ID:
         return await message.reply("❌ Только для основателя!")
     
-    # Убираем !give из текста
     text = re.sub(r'^!\s*give\s+', '', message.text, flags=re.IGNORECASE).strip()
-    if not text:
-        return await message.reply("❌ Использование: !give @user 1000")
-    
-    # Ищем @username и сумму
     parts = text.split()
     target = None
     amount = None
@@ -840,15 +788,13 @@ async def give_cmd(message: types.Message):
         if part.startswith("@"):
             target = part
         else:
-            try:
-                amount = int(part)
-            except:
-                pass
+            try: amount = int(part)
+            except: pass
     
     if not target:
-        return await message.reply("❌ Укажи @username пользователя!")
+        return await message.reply("❌ Укажи @username!")
     if not amount:
-        return await message.reply("❌ Укажи сумму для выдачи!")
+        return await message.reply("❌ Укажи сумму!")
     
     uid, name, _ = await resolve_target(message, target)
     if not uid:
@@ -858,7 +804,7 @@ async def give_cmd(message: types.Message):
     await message.reply(f"✅ {user_link(uid, message.chat.id, name)} получил {amount} монет от основателя!")
 
 # ============================================================
-#  ИГРЫ — ФИКС ВЕТОК + reply
+#  ИГРЫ
 # ============================================================
 async def check_bet(message, bet, min_bet=10):
     uid=message.from_user.id; coins,_,_,_=get_user(uid)
@@ -980,8 +926,7 @@ async def cmd_bowling(m): await start_duel(m,"bowling")
 
 async def start_duel(message: types.Message, game_type: str):
     if not message.reply_to_message:
-        return await bot.send_message(message.chat.id,"❌ Ответь на сообщение соперника!",message_thread_id=tid(message),
-                                      reply_to_message_id=message.message_id)
+        return await bot.send_message(message.chat.id,"❌ Ответь на сообщение соперника!",message_thread_id=tid(message))
     ch=message.from_user; opp=message.reply_to_message.from_user
     if ch.id==opp.id:  return await bot.send_message(message.chat.id,"❌ Нельзя с собой!",message_thread_id=tid(message))
     if opp.is_bot:     return await bot.send_message(message.chat.id,"❌ Нельзя с ботом!",message_thread_id=tid(message))
@@ -1039,7 +984,7 @@ async def run_duel(cid, p1, p2, game_type, thread_id):
     active_duels.pop(f"{cid}_{p1}_{p2}",None)
 
 # ============================================================
-#  ПРИВЕТСТВИЯ (поддержка фото/гиф/видео/текст)
+#  ПРИВЕТСТВИЯ
 # ============================================================
 def gsfx(g): return "ёл" if g==0 else "ла" if g==1 else "ли"
 
@@ -1121,72 +1066,14 @@ async def welcome_new(message: types.Message):
         await send_welcome_message(cid, member, message.message_thread_id)
 
 # ============================================================
-#  /setwelcome — ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ ВЕРСИЯ
+#  /setwelcome — ПРОСТАЯ И НАДЁЖНАЯ ВЕРСИЯ
 # ============================================================
 
 @dp.message(Command("setwelcome"))
-async def set_welcome_cmd(message: types.Message, state: FSMContext):
+async def set_welcome_cmd(message: types.Message):
     if not await mod_guard(message):
         return
     
-    # Сбрасываем предыдущее состояние
-    await state.clear()
-    
-    # Проверяем, есть ли медиа В СООБЩЕНИИ С КОМАНДОЙ
-    has_media = (
-        message.photo or 
-        message.animation or 
-        message.video or
-        message.sticker or 
-        message.voice or 
-        message.video_note
-    )
-    
-    # Получаем текст после команды (если есть)
-    full_text = message.text or message.caption or ""
-    # Убираем /setwelcome и всё что до него
-    text_after = re.sub(r'.*?/setwelcome\s*', '', full_text, flags=re.IGNORECASE).strip()
-    
-    # Если есть медиа ИЛИ есть текст после команды - сохраняем сразу
-    if has_media or text_after:
-        caption = text_after if text_after else (message.caption or "")
-        await save_welcome_from_message(message, caption)
-        return
-    
-    # Если ничего нет — ждём следующее сообщение
-    await state.set_state(SetWelcomeState.waiting_for_welcome)
-    await message.reply(
-        "📸 <b>Отправь приветствие следующим сообщением!</b>\n\n"
-        "Это может быть:\n"
-        "• Текст (можно с шаблонами {имя}, {упоминание}, вош{ла|ёл|ли})\n"
-        "• Фото (с подписью или без)\n"
-        "• Гифка / анимация\n"
-        "• Видео\n"
-        "• Стикер\n"
-        "• Голосовое сообщение\n"
-        "• Видеокружок\n\n"
-        "⏳ У тебя 60 секунд."
-    )
-
-
-@dp.message(SetWelcomeState.waiting_for_welcome)
-async def set_welcome_receive(message: types.Message, state: FSMContext):
-    if not await mod_guard(message):
-        await state.clear()
-        return
-    
-    # Если это другая команда — отменяем
-    if message.text and message.text.startswith('/'):
-        await state.clear()
-        return
-    
-    caption = message.text or message.caption or ""
-    await save_welcome_from_message(message, caption)
-    await state.clear()
-
-
-async def save_welcome_from_message(message: types.Message, caption: str):
-    """Сохраняет приветствие из сообщения"""
     chat_id = message.chat.id
     welcome_type = "text"
     file_id = None
@@ -1210,18 +1097,31 @@ async def save_welcome_from_message(message: types.Message, caption: str):
     elif message.video_note:
         welcome_type = "video_note"
         file_id = message.video_note.file_id
-    elif message.text:
-        welcome_type = "text"
-        file_id = None
-    else:
-        await message.reply("❌ Неподдерживаемый тип сообщения. Попробуй ещё раз /setwelcome")
+    
+    # Получаем текст (из текста сообщения или подписи к медиа)
+    caption = ""
+    if message.text:
+        # Убираем команду /setwelcome из текста
+        caption = re.sub(r'^/\s*setwelcome\s*', '', message.text, flags=re.IGNORECASE).strip()
+    elif message.caption:
+        caption = message.caption.strip()
+    
+    # Если нет ни текста, ни медиа
+    if not caption and not file_id:
+        await message.reply(
+            "📝 Использование:\n"
+            "• /setwelcome Привет, {имя}! — текстовое приветствие\n"
+            "• /setwelcome + фото/гифка/видео — медиа-приветствие\n"
+            "• Можно добавить подпись к медиа\n\n"
+            "Шаблоны: {имя}, {упоминание}, вош{ла|ёл|ли}"
+        )
         return
     
-    # Если подпись не задана, ставим стандартный текст
+    # Если нет текста — ставим стандартный
     if not caption:
         caption = "👋 Добро пожаловать, {упоминание}!"
     
-    # Сохраняем в базу
+    # Сохраняем
     db("INSERT OR REPLACE INTO group_welcome (chat_id, welcome_text, welcome_type, welcome_file_id) VALUES (?,?,?,?)",
        (chat_id, caption, welcome_type, file_id))
     
@@ -1234,7 +1134,7 @@ async def save_welcome_from_message(message: types.Message, caption: str):
         "voice": "🎤 Голосовое",
         "video_note": "🔵 Видеокружок",
     }
-    await message.reply(f"✅ Приветствие сохранено! Тип: {type_names.get(welcome_type, welcome_type)}")
+    await message.reply(f"✅ Приветствие сохранено!\nТип: {type_names.get(welcome_type, welcome_type)}\nТекст: {caption[:100]}..." if len(caption) > 100 else f"✅ Приветствие сохранено!\nТип: {type_names.get(welcome_type, welcome_type)}\nТекст: {caption}")
 
 
 # ============================================================
@@ -1714,9 +1614,9 @@ async def main():
         await bot.set_my_commands(GROUP_COMMANDS,scope=BotCommandScopeAllGroupChats())
     except Exception as e: logging.warning(f"Commands: {e}")
     me=await bot.get_me()
-    print(f"✅ @{me.username} запущен! v5-final")
-    print("   ✅ /setwelcome полностью исправлен")
-    print("   ✅ !give @user сумма — для основателя")
+    print(f"✅ @{me.username} запущен!")
+    print("   ✅ /setwelcome: просто и надёжно")
+    print("   ✅ !give @user сумма: для основателя")
     try:
         for (cid,) in db("SELECT chat_id FROM chat_settings WHERE close_time IS NOT NULL",fetch=True):
             await apply_schedule_now(cid)
