@@ -1,6 +1,5 @@
 # ============================================================
-#  VOID HELPER BOT — С ИСПРАВЛЕННЫМ ПРИВЕТСТВИЕМ
-#  ✅ Фото/Видео работают правильно!
+#  VOID HELPER BOT — БЕЗ БАГОВ
 # ============================================================
 import asyncio
 import sqlite3
@@ -19,38 +18,25 @@ from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ChatPermissions,
-    BotCommand,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
 logging.basicConfig(level=logging.ERROR)
 
-# ============================================================
-#  НАСТРОЙКИ
-# ============================================================
 TOKEN    = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
 DB_NAME  = 'void_bot.db'
 
-# ============================================================
-#  СОСТОЯНИЯ
-# ============================================================
 class WelcomeSetup(StatesGroup):
     waiting_for_media = State()
     waiting_for_text = State()
 
-# ============================================================
-#  ИНИЦИАЛИЗАЦИЯ
-# ============================================================
 storage = MemoryStorage()
 session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=storage)
 
-# ============================================================
-#  БД
-# ============================================================
 def db(query, params=(), fetch=False):
     try:
         with sqlite3.connect(DB_NAME) as conn:
@@ -72,9 +58,6 @@ for sql in [
 ]:
     db(sql)
 
-# ============================================================
-#  ФУНКЦИИ
-# ============================================================
 def get_user(uid: int) -> tuple:
     r = db("SELECT coins, xp, warns, name FROM users WHERE id=?", (uid,), fetch=True)
     if not r:
@@ -151,7 +134,7 @@ def parse_duration(duration_str: str) -> int:
         return 3600
 
 # ============================================================
-#  СТАРТ
+#  КОМАНДЫ
 # ============================================================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -162,26 +145,22 @@ async def start_cmd(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Профиль", callback_data="menu_profile"),
          InlineKeyboardButton(text="🏆 Топ", callback_data="menu_top")],
-        [InlineKeyboardButton(text="💰 Экономика", callback_data="menu_econ"),
+        [InlineKeyboardButton(text="💰 Эконом", callback_data="menu_econ"),
          InlineKeyboardButton(text="🎮 Игры", callback_data="menu_games")],
     ])
 
-    await message.answer(
-        f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
-        f"🤖 VOID Helper\n\n"
-        f"📋 /help — все команды",
-        reply_markup=kb)
+    await message.answer(f"👋 Привет!\n\n🤖 VOID Helper\n\n📋 /help — команды", reply_markup=kb)
 
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
     await message.answer(
         "<b>📖 VOID HELPER</b>\n\n"
-        "<b>💰 ЭКОНОМИКА:</b> /work /daily /profile /top /shop /buy\n"
-        "<b>🎮 ИГРЫ:</b> /casino /darts /coinflip /rps\n"
-        "<b>💍 БРАКИ:</b> +брак +развод +пара +список браков\n"
-        "<b>⚙️ МОДЕРАЦИЯ:</b> !мут !бан !админ !варн -варн !помощь\n"
-        "<b>🎉 ПРИВЕТСТВИЯ:</b> /welcome /delwelcome\n"
-        "<b>💎 ОСНОВАТЕЛЬ:</b> !give @user сумма")
+        "<b>💰:</b> /work /daily /profile /top /shop /buy\n"
+        "<b>🎮:</b> /casino /darts /coinflip /rps\n"
+        "<b>💍:</b> +брак +развод +пара +список браков\n"
+        "<b>⚙️:</b> !мут !бан !админ !варн -варн\n"
+        "<b>🎉:</b> /welcome /delwelcome\n"
+        "<b>💎:</b> !give @user сумма")
 
 # ============================================================
 #  ПРИВЕТСТВИЕ - ИСПРАВЛЕННОЕ
@@ -189,21 +168,22 @@ async def help_cmd(message: types.Message):
 @dp.message(Command("welcome"))
 async def welcome_cmd(message: types.Message, state: FSMContext):
     """Начало установки приветствия"""
+    # Проверка в группе ли команда
+    if message.chat.type not in ("group", "supergroup"):
+        return await message.answer("❌ Команду пиши в группе!")
+
+    # Проверка прав админа
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.answer("❌ Только для администраторов!")
 
-    if message.chat.type not in ("group", "supergroup"):
-        return await message.answer("❌ Только в группах!")
-
-    # Устанавливаем состояние
+    # Устанавливаем состояние и сохраняем ID группы
     await state.set_state(WelcomeSetup.waiting_for_media)
     await state.update_data(chat_id=message.chat.id)
 
     await message.answer(
         "<b>🎉 УСТАНОВКА ПРИВЕТСТВИЯ</b>\n\n"
         "📸 <b>ОТПРАВЬ ФОТО, ВИДЕО ИЛИ ГИФКУ</b>\n\n"
-        "Это будет показано новым членам чата.\n\n"
-        "Только одно медиа - просто отправь его боту!")
+        "Это будет показано новым членам чата.")
 
 # ============================================================
 #  ОЖИДАНИЕ МЕДИА
@@ -212,33 +192,27 @@ async def welcome_cmd(message: types.Message, state: FSMContext):
 async def welcome_media_handler(message: types.Message, state: FSMContext):
     """Получаем фото/видео/гифку"""
     
-    # Проверяем что это медиа, а не текст
     file_id = None
     media_type = None
 
     if message.photo:
         file_id = message.photo[-1].file_id
         media_type = "photo"
-        await message.answer("✅ <b>Фото получено!</b>\n\n📝 Теперь напиши текст приветствия")
+        await message.answer("✅ <b>Фото получено!</b>\n\n📝 Напиши текст приветствия")
     
     elif message.video:
         file_id = message.video.file_id
         media_type = "video"
-        await message.answer("✅ <b>Видео получено!</b>\n\n📝 Теперь напиши текст приветствия")
+        await message.answer("✅ <b>Видео получено!</b>\n\n📝 Напиши текст приветствия")
     
     elif message.animation:
         file_id = message.animation.file_id
         media_type = "animation"
-        await message.answer("✅ <b>Гифка получена!</b>\n\n📝 Теперь напиши текст приветствия")
+        await message.answer("✅ <b>Гифка получена!</b>\n\n📝 Напиши текст приветствия")
     
     else:
-        # Если не медиа - просим снова
-        return await message.answer(
-            "❌ <b>ОШИБКА!</b>\n\n"
-            "Отправь <b>фото</b>, <b>видео</b> или <b>гифку</b>!\n\n"
-            "Не текст, а реально медиа файл 📸")
+        return await message.answer("❌ ОШИБКА!\n\nОтправь фото, видео или гифку! 📸")
 
-    # Сохраняем в state
     await state.update_data(file_id=file_id, media_type=media_type)
     await state.set_state(WelcomeSetup.waiting_for_text)
 
@@ -249,9 +223,8 @@ async def welcome_media_handler(message: types.Message, state: FSMContext):
 async def welcome_text_handler(message: types.Message, state: FSMContext):
     """Получаем текст приветствия"""
     
-    # Проверяем что это текст
     if not message.text:
-        return await message.answer("❌ Напиши текст приветствия!")
+        return await message.answer("❌ Напиши текст!")
 
     text = message.text.strip()
     data = await state.get_data()
@@ -272,29 +245,28 @@ async def welcome_text_handler(message: types.Message, state: FSMContext):
 
     await message.answer(
         f"<b>✅ ПРИВЕТСТВИЕ УСТАНОВЛЕНО!</b>\n\n"
-        f"🖼️ Тип: {media_type}\n"
-        f"📝 Текст: {text[:50]}...\n\n"
-        f"<b>✨ Готово! При входе новых людей они получат это приветствие!</b>")
+        f"📝 {text[:50]}...\n\n"
+        f"<b>Готово!</b>")
 
 @dp.message(Command("delwelcome"))
 async def del_welcome(message: types.Message):
     """Удалить приветствие"""
-    if not await is_admin(message.chat.id, message.from_user.id):
-        return await message.answer("❌ Только для администраторов!")
-
     if message.chat.type not in ("group", "supergroup"):
-        return await message.answer("❌ Только в группах!")
+        return
+
+    if not await is_admin(message.chat.id, message.from_user.id):
+        return
 
     r = db("SELECT file_id FROM welcomes WHERE chat_id=?", (message.chat.id,), fetch=True)
 
     if not r:
-        return await message.answer("❌ Приветствие не установлено")
+        return await message.answer("❌ Приветствия нет")
 
     db("DELETE FROM welcomes WHERE chat_id=?", (message.chat.id,))
-    await message.answer("🗑️ <b>Приветствие удалено</b>")
+    await message.answer("🗑️ Удалено")
 
 # ============================================================
-#  НОВЫЕ ЧЛЕНЫ ЧАТА
+#  НОВЫЕ ЧЛЕНЫ
 # ============================================================
 @dp.message(F.new_chat_members)
 async def new_member_handler(message: types.Message):
@@ -302,7 +274,6 @@ async def new_member_handler(message: types.Message):
     
     chat_id = message.chat.id
     
-    # Получаем приветствие
     r = db("SELECT file_id, media_type, caption FROM welcomes WHERE chat_id=?", (chat_id,), fetch=True)
 
     if not r:
@@ -310,31 +281,26 @@ async def new_member_handler(message: types.Message):
 
     file_id, media_type, caption = r[0]
 
-    # Обрабатываем каждого нового члена
     for member in message.new_chat_members:
         if member.is_bot:
             continue
 
         name = member.first_name or "Гость"
         
-        # Упоминание
         if member.username:
             mention = f"@{member.username}"
         else:
             mention = f"<a href='tg://user?id={member.id}'>{name}</a>"
 
-        # Заменяем переменные
         text = caption.replace("{name}", name)
         text = text.replace("{mention}", mention)
 
-        # Пытаемся получить номер
         try:
             count = await bot.get_chat_members_count(chat_id)
             text = text.replace("{count}", str(count))
         except:
             text = text.replace("{count}", "")
 
-        # Отправляем приветствие
         try:
             if media_type == "photo":
                 await bot.send_photo(chat_id, file_id, caption=text, message_thread_id=tid(message))
@@ -343,11 +309,7 @@ async def new_member_handler(message: types.Message):
             elif media_type == "animation":
                 await bot.send_animation(chat_id, file_id, caption=text, message_thread_id=tid(message))
         except Exception as e:
-            logging.error(f"Welcome error: {e}")
-            try:
-                await bot.send_message(chat_id, f"👋 {text}", message_thread_id=tid(message))
-            except:
-                pass
+            logging.error(f"Welcome: {e}")
 
 # ============================================================
 #  ЭКОНОМИКА
@@ -356,19 +318,9 @@ async def new_member_handler(message: types.Message):
 async def profile_cmd(message: types.Message):
     uid = message.from_user.id
     coins, xp, warns, name = get_user(uid)
-    
-    if not name:
-        name = message.from_user.first_name or "Игрок"
-        update_user_name(uid, name)
-    
     level = xp // 100
     
-    await message.answer(
-        f"<b>👤 ПРОФИЛЬ</b>\n\n"
-        f"📛 {name}\n"
-        f"⭐ Уровень: {level}\n"
-        f"💰 Монеты: {coins}\n"
-        f"📊 XP: {xp}")
+    await message.answer(f"👤 {name}\n⭐ {level}\n💰 {coins}\n📊 {xp}")
 
 @dp.message(Command("top"))
 async def top_cmd(message: types.Message):
@@ -377,13 +329,12 @@ async def top_cmd(message: types.Message):
         return await message.answer("🏆 Пусто")
     
     medals = ["🥇", "🥈", "🥉"]
-    lines = ["<b>🏆 ТОП 10</b>\n"]
+    lines = ["<b>🏆 ТОП</b>\n"]
     
     for i, (uid, coins, name) in enumerate(rows):
         medal = medals[i] if i < 3 else f"{i+1}."
-        if not name:
-            name = f"ID{uid}"
-        lines.append(f"{medal} {name} — {coins} 💰")
+        n = name if name else f"ID{uid}"
+        lines.append(f"{medal} {n} — {coins}")
     
     await message.answer("\n".join(lines))
 
@@ -391,12 +342,11 @@ async def top_cmd(message: types.Message):
 async def work_cmd(message: types.Message):
     uid = message.from_user.id
     r = db("SELECT last_work FROM users WHERE id=?", (uid,), fetch=True)
-    last_work = r[0][0] if r else 0
+    last = r[0][0] if r else 0
     now = int(time.time())
 
-    if now - last_work < 600:
-        rem = 600 - (now - last_work)
-        return await message.answer(f"⏳ Через {rem//60}м")
+    if now - last < 600:
+        return await message.answer(f"⏳ Через {(600-(now-last))//60}м")
 
     pay = random.randint(400, 1000)
     xpg = random.randint(15, 35)
@@ -405,7 +355,7 @@ async def work_cmd(message: types.Message):
     lvl = add_xp(uid, xpg)
     db("UPDATE users SET last_work=? WHERE id=?", (now, uid))
 
-    msg = f"⛏ Работа\n💰 +{pay}\n✨ +{xpg} XP"
+    msg = f"💰 +{pay}\n✨ +{xpg}"
     if lvl:
         msg += f"\n🎉 Уровень {lvl}!"
     await message.answer(msg)
@@ -416,52 +366,51 @@ async def daily_cmd(message: types.Message):
     get_user(uid)
     now = int(time.time())
     r = db("SELECT last_daily FROM users WHERE id=?", (uid,), fetch=True)
-    last_daily = r[0][0] if r else 0
+    last = r[0][0] if r else 0
 
-    if now - last_daily < 86400:
-        rem = 86400 - (now - last_daily)
-        return await message.answer(f"🎁 Через {rem//3600}ч")
+    if now - last < 86400:
+        return await message.answer(f"🎁 Через {(86400-(now-last))//3600}ч")
 
     bonus = random.randint(300, 700)
     add_coins(uid, bonus)
     lvl = add_xp(uid, 50)
     db("UPDATE users SET last_daily=? WHERE id=?", (now, uid))
 
-    msg = f"🎁 Бонус\n💰 +{bonus}\n✨ +50 XP"
+    msg = f"💰 +{bonus}\n✨ +50"
     if lvl:
         msg += f"\n🎉 Уровень {lvl}!"
     await message.answer(msg)
 
 @dp.message(Command("shop"))
 async def shop_cmd(message: types.Message):
-    await message.answer("🛒 МАГАЗИН\n\n1️⃣ x2 множитель — 500 💰\n2️⃣ Сброс работы — 300 💰\n\n/buy 1 или /buy 2")
+    await message.answer("1️⃣ x2 множитель — 500\n2️⃣ Сброс работы — 300\n\n/buy 1 или /buy 2")
 
 @dp.message(Command("buy"))
 async def buy_cmd(message: types.Message):
     args = message.text.split()
     if len(args) < 2:
-        return await message.answer("❌ /buy 1 или /buy 2")
+        return
 
     try:
         item = int(args[1])
     except:
-        return await message.answer("❌ Номер!")
+        return
 
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
 
     if item == 1:
         if coins < 500:
-            return await message.answer(f"❌ Нужно 500 💰")
+            return
         add_coins(uid, -500)
-        await message.answer("✨ x2 множитель на 1 час!")
+        await message.answer("✨ x2 на 1 час!")
 
     elif item == 2:
         if coins < 300:
-            return await message.answer(f"❌ Нужно 300 💰")
+            return
         add_coins(uid, -300)
         db("UPDATE users SET last_work=0 WHERE id=?", (uid,))
-        await message.answer("⚡ Кулдаун сброшен!")
+        await message.answer("⚡ Сброс!")
 
 # ============================================================
 #  ИГРЫ
@@ -470,13 +419,13 @@ async def buy_cmd(message: types.Message):
 async def casino_cmd(message: types.Message):
     bet = extract_bet(message.text)
     if not bet:
-        return await message.answer("🎰 /casino 100")
+        return
 
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
 
     if bet > coins or bet < 10:
-        return await message.answer(f"❌ Ошибка ставки")
+        return
 
     add_coins(uid, -bet)
     dice = await bot.send_dice(message.chat.id, emoji="🎰", message_thread_id=tid(message))
@@ -486,32 +435,31 @@ async def casino_cmd(message: types.Message):
     
     if v == 64:
         add_coins(uid, bet * 10)
-        txt = f"🎉 ДЖЕКПОТ!\n💰 +{bet * 10}"
+        txt = f"🎉 ДЖЕКПОТ!\n+{bet * 10}"
     elif v >= 50:
         add_coins(uid, bet * 4)
-        txt = f"🎰 КРУПНО!\n💰 +{bet * 4}"
+        txt = f"🎰 +{bet * 4}"
     elif v >= 30:
         add_coins(uid, bet * 2)
-        txt = f"🎰 Выигрыш!\n💰 +{bet * 2}"
+        txt = f"+{bet * 2}"
     elif v >= 15:
         add_coins(uid, bet)
-        txt = f"🎰 Возврат {bet}"
+        txt = f"Возврат {bet}"
     else:
-        txt = f"😞 Проиграл"
+        txt = f"Минус {bet}"
 
     await message.answer(txt)
 
 @dp.message(Command("darts"))
 async def darts_cmd(message: types.Message):
     bet = extract_bet(message.text)
-    if not bet:
-        return await message.answer("🎯 /darts 50")
+    if not bet or bet < 10:
+        return
 
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
-
-    if bet > coins or bet < 10:
-        return await message.answer("❌ Ошибка")
+    if bet > coins:
+        return
 
     add_coins(uid, -bet)
     dice = await bot.send_dice(message.chat.id, emoji="🎯", message_thread_id=tid(message))
@@ -521,49 +469,47 @@ async def darts_cmd(message: types.Message):
     
     if v == 6:
         add_coins(uid, bet * 5)
-        txt = f"🎯 БУЛЛ-АЙ!\n+{bet * 5}"
+        txt = f"+{bet * 5}"
     elif v == 5:
         add_coins(uid, bet * 3)
-        txt = f"🎯 ОТЛИЧНО!\n+{bet * 3}"
+        txt = f"+{bet * 3}"
     elif v == 4:
         add_coins(uid, bet * 2)
-        txt = f"🎯 ХОРОШО!\n+{bet * 2}"
+        txt = f"+{bet * 2}"
     else:
-        txt = f"😞 Мимо"
+        txt = f"-{bet}"
 
     await message.answer(txt)
 
 @dp.message(Command("coinflip"))
 async def coinflip_cmd(message: types.Message):
     bet = extract_bet(message.text)
-    if not bet:
-        return await message.answer("🪙 /coinflip 30")
+    if not bet or bet < 10:
+        return
 
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
-
-    if bet > coins or bet < 10:
-        return await message.answer("❌ Ошибка")
+    if bet > coins:
+        return
 
     add_coins(uid, -bet)
 
     if random.random() > 0.5:
         add_coins(uid, bet * 2)
-        await message.answer(f"🪙 ОРЁЛ\n🎉 +{bet * 2}")
+        await message.answer(f"🪙 +{bet * 2}")
     else:
-        await message.answer(f"🪙 РЕШКА\n😞 -{bet}")
+        await message.answer(f"🪙 -{bet}")
 
 @dp.message(Command("rps"))
 async def rps_cmd(message: types.Message):
     bet = extract_bet(message.text)
-    if not bet:
-        return await message.answer("✊ /rps 20")
+    if not bet or bet < 10:
+        return
 
     uid = message.from_user.id
     coins, _, _, _ = get_user(uid)
-
-    if bet > coins or bet < 10:
-        return await message.answer("❌ Ошибка")
+    if bet > coins:
+        return
 
     add_coins(uid, -bet)
 
@@ -571,12 +517,12 @@ async def rps_cmd(message: types.Message):
     bot_choice = random.choice(choices)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🪨 Камень", callback_data=f"rps_камень_{uid}_{bet}_{bot_choice}"),
-         InlineKeyboardButton(text="✂️ Ножницы", callback_data=f"rps_ножницы_{uid}_{bet}_{bot_choice}"),
-         InlineKeyboardButton(text="📄 Бумага", callback_data=f"rps_бумага_{uid}_{bet}_{bot_choice}")],
+        [InlineKeyboardButton(text="🪨", callback_data=f"rps_камень_{uid}_{bet}_{bot_choice}"),
+         InlineKeyboardButton(text="✂️", callback_data=f"rps_ножницы_{uid}_{bet}_{bot_choice}"),
+         InlineKeyboardButton(text="📄", callback_data=f"rps_бумага_{uid}_{bet}_{bot_choice}")],
     ])
 
-    await message.answer("✊ Выбери:", reply_markup=kb)
+    await message.answer("✊", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("rps_"))
 async def rps_callback(call: types.CallbackQuery):
@@ -587,18 +533,18 @@ async def rps_callback(call: types.CallbackQuery):
     bot_choice = "_".join(parts[4:])
 
     if call.from_user.id != uid:
-        return await call.answer("❌ Не твоя", show_alert=True)
+        return
 
     if user_choice == bot_choice:
         add_coins(uid, bet)
-        result = f"🤝 НИЧЬЯ!"
+        result = f"🤝"
     elif (user_choice == "камень" and bot_choice == "ножницы") or \
          (user_choice == "ножницы" and bot_choice == "бумага") or \
          (user_choice == "бумага" and bot_choice == "камень"):
         add_coins(uid, bet * 2)
-        result = f"🎉 ПОБЕДА!\n+{bet * 2}"
+        result = f"🎉 +{bet * 2}"
     else:
-        result = f"😞 ПОРАЖЕНИЕ!"
+        result = f"😞 -{bet}"
 
     await call.message.edit_text(result)
     await call.answer()
@@ -614,24 +560,18 @@ async def marry_cmd(message: types.Message):
     uid = message.from_user.id
     chat_id = message.chat.id
 
-    r = db("SELECT user1, user2 FROM marriages WHERE (user1=? OR user2=?) AND chat_id=?",
-           (uid, uid, chat_id), fetch=True)
-    if r:
-        return await message.answer("❌ Ты уже женат!")
-
     args = message.text[5:].strip()
     target_id, target_name = await resolve_target(message, args)
 
     if not target_id or target_id == uid:
-        return await message.answer("❌ Укажи @user или ответь")
+        return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💍 Да!", callback_data=f"marry_yes_{uid}_{target_id}_{chat_id}"),
-         InlineKeyboardButton(text="💔 Нет", callback_data=f"marry_no_{uid}_{target_id}")],
+        [InlineKeyboardButton(text="✅", callback_data=f"marry_yes_{uid}_{target_id}_{chat_id}"),
+         InlineKeyboardButton(text="❌", callback_data=f"marry_no_{uid}_{target_id}")],
     ])
 
-    user_name = message.from_user.first_name or "Игрок"
-    await message.answer(f"💍 {user_name} предлагает брак {target_name}!", reply_markup=kb)
+    await message.answer(f"💍 {message.from_user.first_name} → {target_name}?", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("marry_yes_"))
 async def marry_accept(call: types.CallbackQuery):
@@ -639,17 +579,17 @@ async def marry_accept(call: types.CallbackQuery):
     uid1, uid2, chat_id = int(parts[2]), int(parts[3]), int(parts[4])
 
     if call.from_user.id != uid2:
-        return await call.answer("❌ Не тебе!", show_alert=True)
+        return
 
     db("INSERT INTO marriages (user1, user2, chat_id, since) VALUES (?,?,?,?)",
        (uid1, uid2, chat_id, int(time.time())))
 
-    await call.message.edit_text("💍 ПОЗДРАВЛЯЕМ! 👰🤵")
+    await call.message.edit_text("💍 ДА!")
     await call.answer()
 
 @dp.callback_query(F.data.startswith("marry_no_"))
 async def marry_deny(call: types.CallbackQuery):
-    await call.message.edit_text("💔 Отклонено")
+    await call.message.edit_text("💔")
     await call.answer()
 
 @dp.message(F.text.lower().startswith("+развод"))
@@ -658,53 +598,15 @@ async def divorce_cmd(message: types.Message):
         return
 
     uid = message.from_user.id
-    chat_id = message.chat.id
-
     r = db("SELECT user1, user2 FROM marriages WHERE (user1=? OR user2=?) AND chat_id=?",
-           (uid, uid, chat_id), fetch=True)
+           (uid, uid, message.chat.id), fetch=True)
 
     if not r:
-        return await message.answer("❌ Ты не женат!")
-
-    db("DELETE FROM marriages WHERE (user1=? OR user2=?) AND chat_id=?", (uid, uid, chat_id))
-    await message.answer("💔 Развод завершён")
-
-@dp.message(F.text.lower().startswith("+пара"))
-async def couple_info(message: types.Message):
-    if message.chat.type not in ("group", "supergroup"):
         return
 
-    uid = message.from_user.id
-    chat_id = message.chat.id
-
-    r = db("SELECT user1, user2, since FROM marriages WHERE (user1=? OR user2=?) AND chat_id=?",
-           (uid, uid, chat_id), fetch=True)
-
-    if not r:
-        return await message.answer("💔 Ты не женат!")
-
-    user1, user2, since = r[0]
-    days = (int(time.time()) - since) // 86400
-
-    await message.answer(f"💑 ID{user1} + ID{user2}\n📅 {days} дней")
-
-@dp.message(F.text.lower().startswith("+список браков"))
-async def marriages_list(message: types.Message):
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
-    rows = db("SELECT user1, user2, since FROM marriages WHERE chat_id=?",
-              (message.chat.id,), fetch=True)
-
-    if not rows:
-        return await message.answer("💔 Браков нет")
-
-    lines = ["<b>💍 СПИСОК БРАКОВ</b>\n"]
-    for user1, user2, since in rows:
-        days = (int(time.time()) - since) // 86400
-        lines.append(f"💑 ID{user1} + ID{user2} — {days} дн")
-
-    await message.answer("\n".join(lines))
+    db("DELETE FROM marriages WHERE (user1=? OR user2=?) AND chat_id=?",
+       (uid, uid, message.chat.id))
+    await message.answer("💔")
 
 # ============================================================
 #  МОДЕРАЦИЯ
@@ -712,13 +614,13 @@ async def marriages_list(message: types.Message):
 @dp.message(F.text.startswith("!мут"))
 async def mute_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id):
-        return await message.answer("❌ Админы")
+        return
 
     args = message.text[4:].strip()
     target_id, target_name = await resolve_target(message, args)
 
     if not target_id or await is_admin(message.chat.id, target_id):
-        return await message.answer("❌ Ошибка")
+        return
 
     duration_seconds = parse_duration(args)
     until = datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
@@ -727,9 +629,9 @@ async def mute_cmd(message: types.Message):
         await bot.restrict_chat_member(message.chat.id, target_id,
                                        permissions=ChatPermissions(can_send_messages=False),
                                        until_date=until)
-        await message.answer(f"🔇 {target_name} замучен")
+        await message.answer(f"🔇 {target_name}")
     except:
-        await message.answer("❌ Ошибка")
+        pass
 
 @dp.message(F.text.startswith("-размут"))
 async def unmute_cmd(message: types.Message):
@@ -737,7 +639,7 @@ async def unmute_cmd(message: types.Message):
         return
 
     args = message.text[8:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id:
         return
@@ -745,7 +647,6 @@ async def unmute_cmd(message: types.Message):
     try:
         await bot.restrict_chat_member(message.chat.id, target_id,
                                        permissions=ChatPermissions(can_send_messages=True))
-        await message.answer(f"📢 {target_name} размучен")
     except:
         pass
 
@@ -755,14 +656,13 @@ async def ban_cmd(message: types.Message):
         return
 
     args = message.text[4:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id or await is_admin(message.chat.id, target_id):
         return
 
     try:
         await bot.ban_chat_member(message.chat.id, target_id)
-        await message.answer(f"🚫 {target_name} забанен")
     except:
         pass
 
@@ -772,14 +672,13 @@ async def unban_cmd(message: types.Message):
         return
 
     args = message.text[8:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id:
         return
 
     try:
         await bot.unban_chat_member(message.chat.id, target_id)
-        await message.answer(f"✅ {target_name} разбанен")
     except:
         pass
 
@@ -789,7 +688,7 @@ async def admin_cmd(message: types.Message):
         return
 
     args = message.text[6:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id:
         return
@@ -797,7 +696,6 @@ async def admin_cmd(message: types.Message):
     try:
         await bot.promote_chat_member(message.chat.id, target_id, can_manage_chat=True,
                                       can_delete_messages=True, can_restrict_members=True)
-        await message.answer(f"🛡️ {target_name} админ!")
     except:
         pass
 
@@ -807,14 +705,13 @@ async def unadmin_cmd(message: types.Message):
         return
 
     args = message.text[6:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id:
         return
 
     try:
         await bot.promote_chat_member(message.chat.id, target_id, can_manage_chat=False)
-        await message.answer(f"❌ {target_name} разжалован")
     except:
         pass
 
@@ -824,7 +721,7 @@ async def warn_cmd(message: types.Message):
         return
 
     args = message.text[5:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id or await is_admin(message.chat.id, target_id):
         return
@@ -833,15 +730,13 @@ async def warn_cmd(message: types.Message):
     warns += 1
     db("UPDATE users SET warns=? WHERE id=?", (warns, target_id))
 
-    await message.answer(f"⚠️ {target_name} варн #{warns}/3")
-
 @dp.message(F.text.startswith("-варн"))
 async def remove_warn_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id):
         return
 
     args = message.text[5:].strip()
-    target_id, target_name = await resolve_target(message, args)
+    target_id, _ = await resolve_target(message, args)
 
     if not target_id:
         return
@@ -850,7 +745,6 @@ async def remove_warn_cmd(message: types.Message):
     if warns > 0:
         warns -= 1
         db("UPDATE users SET warns=? WHERE id=?", (warns, target_id))
-        await message.answer(f"✅ Варн снят: {warns}/3")
 
 # ============================================================
 #  !give
@@ -858,13 +752,13 @@ async def remove_warn_cmd(message: types.Message):
 @dp.message(F.text.startswith("!give"))
 async def give_cmd(message: types.Message):
     if message.from_user.id != OWNER_ID:
-        return await message.answer("❌ Только основатель!")
+        return
 
     text = message.text.strip()
     parts = text.split()
 
     if len(parts) < 3:
-        return await message.answer("❌ !give @user сумма")
+        return
 
     target = parts[1]
     if not target.startswith("@"):
@@ -873,22 +767,17 @@ async def give_cmd(message: types.Message):
     try:
         amount = int(parts[2])
     except:
-        return await message.answer("❌ Сумма - число!")
+        return
 
     if amount <= 0:
         return
 
     try:
         user = await bot.get_chat(target)
-        uid = user.id
-        name = user.first_name or target[1:]
+        add_coins(user.id, amount)
+        await message.answer(f"✅ {amount} 💰")
     except:
-        return await message.answer(f"❌ {target} не найден!")
-
-    add_coins(uid, amount)
-    update_user_name(uid, name)
-
-    await message.answer(f"✅ {name} получил {amount} 💰")
+        pass
 
 # ============================================================
 #  CALLBACK
@@ -905,12 +794,12 @@ async def cb_top(call: types.CallbackQuery):
 
 @dp.callback_query(F.data == "menu_econ")
 async def cb_econ(call: types.CallbackQuery):
-    await call.message.edit_text("<b>💰</b> /work /daily /shop /buy")
+    await call.message.edit_text("/work /daily /shop /buy")
     await call.answer()
 
 @dp.callback_query(F.data == "menu_games")
 async def cb_games(call: types.CallbackQuery):
-    await call.message.edit_text("<b>🎮</b> /casino /darts /coinflip /rps")
+    await call.message.edit_text("/casino /darts /coinflip /rps")
     await call.answer()
 
 # ============================================================
@@ -923,12 +812,12 @@ async def main():
         pass
 
     me = await bot.get_me()
-    print(f"\n✅ БОТ ЗАПУЩЕН: @{me.username}\n")
+    print(f"\n✅ БОТ ГОТОВ: @{me.username}\n")
 
     try:
         await dp.start_polling(bot, timeout=60)
     except KeyboardInterrupt:
-        print("👋 Отключено")
+        print("Отключено")
 
 if __name__ == "__main__":
     asyncio.run(main())
