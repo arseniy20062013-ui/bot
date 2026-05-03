@@ -1,12 +1,11 @@
 # ============================================================
-#  VOID HELPER BOT — МОДЕРАЦИЯ + АВТОЗАКРЫТИЕ + ФИЛЬТР МАТА
-#  Без экономики, игр и браков
+#  VOID HELPER BOT — МОДЕРАЦИЯ + АВТОЗАКРЫТИЕ + МАТ‑ФИЛЬТР
+#  (чистая версия, без экономики, игр, браков, без !give)
 # ============================================================
 import asyncio
 import sqlite3
 import logging
 import time
-import random
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
@@ -15,11 +14,8 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command, StateFilter
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ChatPermissions,
-)
+from aiogram.filters import Command
+from aiogram.types import ChatPermissions
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
@@ -29,7 +25,20 @@ TOKEN    = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
 DB_NAME  = 'void_bot.db'
 
-# ---------- Состояния (только для приветствия) ----------
+# ---------- ВСТРОЕННЫЙ СПИСОК ГРУБЫХ МАТОВ ----------
+DEFAULT_FORBIDDEN = [
+    "бля", "блядь", "блять", "еблан", "ебал", "ебанутый", "ебан", "ебать",
+    "ёбнутый", "ёбарь", "ёбаный", "ёб твою мать", "ёбнуть", "ёпт", "ёпть",
+    "заебал", "заебись", "залупа", "злоебучий", "мразь", "мудак", "мудила",
+    "нахуй", "на хую", "на хер", "нихуя", "объебос", "охуел", "охуеть",
+    "охуительный", "падла", "пизда", "пиздец", "пиздить", "пидор",
+    "пидорас", "пидрила", "пох", "похер", "похуй", "пошел на хуй",
+    "сука", "сучара", "сучка", "тварь", "уебан", "уебище", "уебок",
+    "хуёво", "хуёвый", "хуй", "хуйло", "хуйня", "хули", "хер", "херня",
+    "чмо", "чмырь", "шалава", "шлюха"
+]
+
+# ---------- Состояния для приветствия ----------
 class WelcomeSetup(StatesGroup):
     waiting_for_media = State()
     waiting_for_text = State()
@@ -53,15 +62,11 @@ def db(query, params=(), fetch=False):
     return [] if fetch else False
 
 for sql in [
-    # Предупреждения и модерация
     'CREATE TABLE IF NOT EXISTS warns (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chat_id INTEGER, issued_at INTEGER, expires_at INTEGER)',
     'CREATE TABLE IF NOT EXISTS warn_settings (chat_id INTEGER PRIMARY KEY, max_warns INTEGER DEFAULT 3, ban_duration INTEGER DEFAULT 0, warn_duration INTEGER DEFAULT 86400)',
     'CREATE TABLE IF NOT EXISTS bans (user_id INTEGER, chat_id INTEGER, reason TEXT DEFAULT "", banned_until INTEGER DEFAULT 0, PRIMARY KEY(user_id,chat_id))',
-    # Приветствия
     'CREATE TABLE IF NOT EXISTS welcomes (chat_id INTEGER PRIMARY KEY, file_id TEXT, media_type TEXT, caption TEXT)',
-    # Расписание
     'CREATE TABLE IF NOT EXISTS schedules (chat_id INTEGER PRIMARY KEY, close_time TEXT, open_time TEXT, enabled INTEGER DEFAULT 0)',
-    # Запрещённые слова
     'CREATE TABLE IF NOT EXISTS forbidden_words (chat_id INTEGER, word TEXT, PRIMARY KEY(chat_id, word))',
 ]:
     db(sql)
@@ -130,12 +135,10 @@ async def parse_moderation_args(message: types.Message):
     parts = text.split(maxsplit=1)
     args_str = parts[1] if len(parts) > 1 else ""
 
-    # Reply приоритетнее
     target_id, target_name = await resolve_target_from_reply(message)
     duration, clean_args = extract_duration(args_str)
     if not target_id:
         target_id, target_name = await resolve_target_from_text(message.chat.id, clean_args)
-    # entities на случай скрытого упоминания
     if not target_id:
         for entity in (message.entities or []):
             if entity.type == "mention":
@@ -147,6 +150,17 @@ async def parse_moderation_args(message: types.Message):
                 except:
                     pass
     return duration, target_id, target_name
+
+def get_warn_settings(chat_id):
+    r = db("SELECT max_warns, ban_duration, warn_duration FROM warn_settings WHERE chat_id=?", (chat_id,), fetch=True)
+    if r: return r[0]
+    db("INSERT INTO warn_settings (chat_id) VALUES (?)", (chat_id,))
+    return (3, 0, 86400)
+
+def get_active_warns(uid, chat_id):
+    now = int(time.time())
+    r = db("SELECT COUNT(*) FROM warns WHERE user_id=? AND chat_id=? AND expires_at > ?", (uid, chat_id, now), fetch=True)
+    return r[0][0] if r else 0
 
 # ---------- Расписание ----------
 closed_chats = set()
@@ -189,7 +203,7 @@ async def schedule_task():
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     if message.chat.type != "private": return
-    await message.answer("👋 Привет! Я VOID Helper – бот модерации и расписания.\n\n📋 /help – список команд")
+    await message.answer("👋 Привет! Я VOID Helper – бот модерации и расписания.\n\n📋 /help – список команд\n📘 /adminhelp – административная справка")
 
 @dp.message(Command("help"))
 async def help_cmd(message: types.Message):
@@ -201,17 +215,16 @@ async def help_cmd(message: types.Message):
         "!бан <срок?> <цель> [причина] | !разбан <цель>\n"
         "!кик <цель> | !амнистия | !банлист\n"
         "!админ <цель> / -админ <цель>\n\n"
-        "🔞 <b>Запрещённые слова</b>\n"
-        "!запретслово <слово> | !разрешслово <слово>\n"
+        "🔞 <b>Встроенный мат‑фильтр</b> (жёсткие слова)\n"
+        "Дополнительно: !запретслово <слово>, !разрешслово <слово>\n"
         "!списокзапретов\n\n"
         "🕒 <b>Расписание</b>\n"
         "/setautoschedule <HH:MM> <HH:MM>\n"
         "/setautoschedule off\n\n"
-        "🎉 <b>Приветствие</b> /welcome /delwelcome\n\n"
-        "📘 <b>Админ-справка:</b> /adminhelp"
+        "🎉 <b>Приветствие</b> /welcome /delwelcome"
     )
 
-# ---------- Приветствие (без HTML-парсинга, чтобы не ломались ссылки) ----------
+# ---------- Приветствие ----------
 @dp.message(Command("welcome"))
 async def welcome_cmd(message: types.Message, state: FSMContext):
     if message.chat.type not in ("group","supergroup"): return
@@ -264,7 +277,6 @@ async def new_member_handler(message: types.Message):
         if member.is_bot: continue
         name = member.first_name or "Гость"
         mention = f"@{member.username}" if member.username else name
-        # Обычный текст, без HTML, чтобы ссылки не ломались
         text = caption.replace("{name}", name).replace("{mention}", mention)
         try:
             count = await bot.get_chat_members_count(chat_id)
@@ -281,7 +293,6 @@ async def new_member_handler(message: types.Message):
             logging.error(f"Welcome send error: {e}")
 
 # ---------- Модерация ----------
-# Мут
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!мут","!mute","!заткнуть","/mute","/мут") for _ in [0]))
 async def mute_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -297,11 +308,11 @@ async def mute_cmd(message: types.Message):
     except:
         await message.answer("❗ Не удалось замьютить. Проверь права бота.")
 
-# Размут
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!размут","!unmute","!говори","/unmute","/размут") for _ in [0]))
 async def unmute_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
-    target_id, target_name = await resolve_target_from_text(message.chat.id, message.text.split(maxsplit=1)[-1] if len(message.text.split())>1 else "")
+    target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
+    target_id, target_name = await resolve_target_from_text(message.chat.id, target)
     if not target_id: target_id, target_name = await resolve_target_from_reply(message)
     if not target_id: return await message.answer("❌ Цель не найдена.")
     try:
@@ -309,7 +320,6 @@ async def unmute_cmd(message: types.Message):
         await message.answer(f"🔊 {target_name} размьючен")
     except: pass
 
-# Варн
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!варн","!warn","!пред","!предупреждение","/warn","/варн") for _ in [0]))
 async def warn_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -326,25 +336,14 @@ async def warn_cmd(message: types.Message):
     if active >= max_warns:
         until = now + ban_duration if ban_duration else 0
         reason = f"Лимит предупреждений ({max_warns})"
-        db("INSERT OR REPLACE INTO bans (user_id, chat_id, reason, banned_until) VALUES (?,?,?,?)", (target_id, message.chat.id, reason, until))
+        db("INSERT OR REPLACE INTO bans (user_id, chat_id, reason, banned_until) VALUES (?,?,?,?)",
+           (target_id, message.chat.id, reason, until))
         try:
             await bot.ban_chat_member(message.chat.id, target_id,
                                       until_date=None if until==0 else datetime.fromtimestamp(until, tz=timezone.utc))
-            await message.answer(f"🚫 {target_name} забанен по достижению лимита варнов.")
+            await message.answer(f"🚫 {target_name} забанен по лимиту варнов.")
         except: pass
 
-def get_warn_settings(chat_id):
-    r = db("SELECT max_warns, ban_duration, warn_duration FROM warn_settings WHERE chat_id=?", (chat_id,), fetch=True)
-    if r: return r[0]
-    db("INSERT INTO warn_settings (chat_id) VALUES (?)", (chat_id,))
-    return (3, 0, 86400)
-
-def get_active_warns(uid, chat_id):
-    now = int(time.time())
-    r = db("SELECT COUNT(*) FROM warns WHERE user_id=? AND chat_id=? AND expires_at > ?", (uid, chat_id, now), fetch=True)
-    return r[0][0] if r else 0
-
-# Настройки варнов
 @dp.message(F.text.lower().startswith("!варны лимит"))
 async def set_warn_limit(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -417,14 +416,12 @@ async def remove_warns_cmd(message: types.Message):
         db("DELETE FROM warns WHERE user_id=? AND chat_id=?", (target_id, message.chat.id))
         await message.answer(f"⚜️ Все варны сняты с {target_name}")
 
-# Бан
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!бан","!ban","!permban","!чс","/бан","/ban") for _ in [0]))
 async def ban_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
     if not target_id: return await message.answer("❌ Укажи цель!")
     if await is_admin(message.chat.id, target_id): return await message.answer("❌ Нельзя забанить администратора.")
-    # Причина – остаток текста без команды и длительности
     clean_args = re.sub(r'(@\w+|\d+\s*(м|мин|ч|час|д|день)\b)', '', message.text.split(maxsplit=1)[-1]).strip()
     reason = clean_args or ""
     now = int(time.time())
@@ -441,7 +438,6 @@ async def ban_cmd(message: types.Message):
     except:
         await message.answer("❗ Не удалось забанить.")
 
-# Разбан
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!разбан","!unban","/разбан","/unban") for _ in [0]))
 async def unban_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -455,7 +451,6 @@ async def unban_cmd(message: types.Message):
         await message.answer(f"✅ {target_name} разбанен")
     except: pass
 
-# Причина бана
 @dp.message(F.text.lower().startswith("!причина"))
 async def reason_cmd(message: types.Message):
     target_id, target_name = await resolve_target_from_text(message.chat.id, message.text[9:].strip())
@@ -467,7 +462,6 @@ async def reason_cmd(message: types.Message):
     else:
         await message.answer("Пользователь не забанен или причина отсутствует.")
 
-# Кик
 @dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!кик","!kick","/кик","/kick") for _ in [0]))
 async def kick_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -482,7 +476,6 @@ async def kick_cmd(message: types.Message):
         await message.answer(f"👢 {target_name} кикнут")
     except: pass
 
-# Амнистия
 @dp.message(F.text.lower().startswith("!амнистия"))
 async def amnesty_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -493,7 +486,6 @@ async def amnesty_cmd(message: types.Message):
     db("DELETE FROM bans WHERE chat_id=?", (message.chat.id,))
     await message.answer("🔓 Амнистия: все баны сняты.")
 
-# Банлист
 @dp.message(F.text.lower().startswith("!банлист"))
 async def banlist_cmd(message: types.Message):
     rows = db("SELECT user_id, reason, banned_until FROM bans WHERE chat_id=?", (message.chat.id,), fetch=True)
@@ -508,7 +500,6 @@ async def banlist_cmd(message: types.Message):
         lines.append(f"• {name} — {reason if reason else '—'} ({dur})")
     await message.answer("\n".join(lines))
 
-# Админка
 @dp.message(F.text.lower().startswith("!админ"))
 async def admin_promote(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -531,11 +522,10 @@ async def admin_demote(message: types.Message):
 
 # ===================== ФИЛЬТР ЗАПРЕЩЁННЫХ СЛОВ =====================
 def get_forbidden_words(chat_id):
-    rows = db("SELECT word FROM forbidden_words WHERE chat_id=?", (chat_id,), fetch=True)
-    return [row[0] for row in rows]
+    chat_words = [row[0] for row in db("SELECT word FROM forbidden_words WHERE chat_id=?", (chat_id,), fetch=True)]
+    return DEFAULT_FORBIDDEN + chat_words
 
 async def moderate_message(message: types.Message):
-    """Проверяет сообщение на запрещённые слова и удаляет/предупреждает."""
     if not message.text: return
     chat_id = message.chat.id
     words = get_forbidden_words(chat_id)
@@ -545,12 +535,10 @@ async def moderate_message(message: types.Message):
         if w in msg_lower:
             try: await bot.delete_message(chat_id, message.message_id)
             except: pass
-            # Предупреждение один раз за сообщение
             await message.answer(f"⚠️ {message.from_user.first_name}, сообщение удалено: запрещённое слово.")
             return
 
-# Добавление / удаление слов
-@dp.message(lambda msg: msg.text and msg.text.startswith("!запретслово"))
+@dp.message(F.text.lower().startswith("!запретслово"))
 async def add_forbidden_word(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     parts = message.text.split(maxsplit=1)
@@ -562,7 +550,7 @@ async def add_forbidden_word(message: types.Message):
         await message.answer(f"🔞 Слово '{word}' добавлено в запрещённые.")
     except: pass
 
-@dp.message(lambda msg: msg.text and msg.text.startswith("!разрешслово"))
+@dp.message(F.text.lower().startswith("!разрешслово"))
 async def del_forbidden_word(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     parts = message.text.split(maxsplit=1)
@@ -577,12 +565,12 @@ async def list_forbidden_words(message: types.Message):
     if not words: return await message.answer("Список пуст.")
     await message.answer("🔞 Запрещённые слова:\n" + ", ".join(words))
 
-# Подключаем фильтр ко всем сообщениям (кроме команд, но можно оставить так – команды не содержат мат обычно)
+# Общий обработчик для всех текстовых сообщений (включая фильтр)
 @dp.message(F.text)
 async def catch_all_messages(message: types.Message):
     await moderate_message(message)
 
-# ===================== /adminhelp (обновлённый) =====================
+# ---------- /adminhelp ----------
 @dp.message(Command("adminhelp"))
 async def admin_help(message: types.Message):
     await message.answer(
@@ -614,15 +602,12 @@ async def admin_help(message: types.Message):
         "Синонимы: !кик, !kick\n"
         "⚜️<b>!Амнистия</b> ⚜️ снимает баны со всех участников беседы\n"
         "⚜️<b>Банлист</b> ⚜️ список забаненных в данной беседе\n\n"
-        "🔞 <b>Фильтр запрещённых слов:</b>\n"
-        "!запретслово <слово> – добавить\n"
-        "!разрешслово <слово> – удалить\n"
-        "!списокзапретов – показать список\n"
-        "Сообщения с запрещёнными словами удаляются.",
+        "🔞 <b>Встроенный мат‑фильтр (жёсткие слова).</b>\n"
+        "Дополнительно можно добавлять свои слова: !запретслово <слово>, !разрешслово <слово>, !списокзапретов.",
         parse_mode="HTML"
     )
 
-# ===================== Расписание =====================
+# ---------- Расписание ----------
 @dp.message(Command("setautoschedule"))
 async def set_schedule(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -649,24 +634,7 @@ async def set_schedule(message: types.Message):
        (message.chat.id, close_str, open_str))
     await message.answer(f"✔ Закрытие: {close_str}, открытие: {open_str}")
 
-# ===================== !give (владелец) =====================
-@dp.message(F.text.startswith("!give"))
-async def give_cmd(message: types.Message):
-    if message.from_user.id != OWNER_ID: return
-    parts = message.text.split()
-    if len(parts) < 3: return
-    target = parts[1]
-    if not target.startswith("@"): target = "@" + target
-    try: amount = int(parts[2])
-    except: return
-    if amount <= 0: return
-    try:
-        user = await bot.get_chat(target)
-        # команда чисто заглушка, экономики нет, но можно оставить для будущих нужд
-        await message.answer(f"✅ Выдано {amount} (экономика отключена).")
-    except: pass
-
-# ===================== Запуск =====================
+# ---------- Запуск ----------
 async def main():
     try: await bot.delete_webhook(drop_pending_updates=True)
     except: pass
