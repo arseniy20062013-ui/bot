@@ -50,10 +50,9 @@ DEFAULT_FORBIDDEN = [
     "асексуальность", "сквиртинг", "сквирт", "фаллос", "фаллический", "вагинизм",
     "диспареуния", "аноргазмия", "преждевременная эякуляция", "эректильная дисфункция",
     "тестостерон", "эстроген", "афродизиак", "порнография", "порнографический",
-    "порноактер", "порноактриса", "порнофильм", "порносайт", "хардкор", "софткор",
+    "порноактер", "порноактриса", "порнофильм", "порносайт", "софткор",
     "эротика", "эротический", "ню", "топлес", "стриптиз", "стриптизерша", "интимная стрижка",
-    "минета", "минетчик", "минетчица", "фелляция", "буккаке", "инцест", "милф", "дилф",
-    "твинк", "секс шоп", "секс игрушка", "секс кукла", "искусственная вагина", "любрикант",
+    "минета", "минетчик", "минетчица", "фелляция", "буккаке", "инцест", "милф", "дилф", "секс шоп", "секс игрушка", "секс кукла", "искусственная вагина", "любрикант",
     "кастрация", "стерилизация", "оральные контрацептивы", "противозачаточные",
     "экстренная контрацепция", "внутриматочная спираль", "презерватив", "смазка",
     "суррогатное материнство", "донор спермы", "яйцеклетка", "эмбрион", "зачатие",
@@ -225,7 +224,7 @@ from aiogram.types import Message
 class WordFilterMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Message, data: dict):
         if event.text and event.chat.type in ('group', 'supergroup'):
-            if event.text.startswith('!') or event.text.startswith('/'):
+            if event.text.startswith('!') or event.text.startswith('/') or event.text.startswith('-'):
                 return await handler(event, data)
             
             chat_id = event.chat.id
@@ -237,7 +236,6 @@ class WordFilterMiddleware(BaseMiddleware):
                 if w in msg_lower:
                     try:
                         user_name = event.from_user.full_name
-                        username = f"@{event.from_user.username}" if event.from_user.username else ""
                         user_link = f'<a href="tg://user?id={event.from_user.id}">{user_name}</a>'
                         
                         await event.answer(
@@ -258,7 +256,6 @@ dp.message.middleware(WordFilterMiddleware())
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    if message.chat.type != "private": return
     await message.answer("👋 Привет! Я VOID Helper – бот модерации и расписания.\n\n📋 /help – список команд\n📘 /adminhelp – административная справка")
 
 @dp.message(Command("help"))
