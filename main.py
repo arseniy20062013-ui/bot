@@ -19,13 +19,13 @@ from aiogram.types import ChatPermissions
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.INFO)  # Изменил на INFO для отладки
 
 TOKEN    = '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY'
 OWNER_ID = 7173827114
 DB_NAME  = 'void_bot.db'
 
-# ---------- НОВЫЙ СПИСОК ЗАПРЕЩЁННЫХ СЛОВ (сексуальная лексика) ----------
+# ---------- СПИСОК ЗАПРЕЩЁННЫХ СЛОВ ----------
 DEFAULT_FORBIDDEN = [
     "камшот", "камшоты", "камшотов", "гетеро", "гетеросексуальность", "джонуанство",
     "импотенция", "интим", "интимность", "интроитус", "клитор", "клитора", "клиторов",
@@ -224,6 +224,43 @@ async def schedule_task():
             logging.error(f"Schedule: {e}")
         await asyncio.sleep(60)
 
+# ===================== MIDDLEWARE ДЛЯ ФИЛЬТРА СЛОВ =====================
+from aiogram import BaseMiddleware
+from aiogram.types import Message
+
+class WordFilterMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: Message, data: dict):
+        # Проверяем только текстовые сообщения в группах
+        if event.text and event.chat.type in ('group', 'supergroup'):
+            # Пропускаем команды (начинаются с ! или /)
+            if event.text.startswith('!') or event.text.startswith('/'):
+                return await handler(event, data)
+            
+            # Проверяем запрещённые слова
+            chat_id = event.chat.id
+            chat_words = [row[0] for row in db("SELECT word FROM forbidden_words WHERE chat_id=?", (chat_id,), fetch=True)]
+            words = DEFAULT_FORBIDDEN + chat_words
+            
+            msg_lower = event.text.lower()
+            for w in words:
+                if w in msg_lower:
+                    try:
+                        await bot.delete_message(chat_id, event.message_id)
+                        warning = await event.answer(
+                            f"⚠️ {event.from_user.first_name}, сообщение удалено: запрещённое слово."
+                        )
+                        # Удаляем предупреждение через 5 секунд
+                        await asyncio.sleep(5)
+                        await warning.delete()
+                    except Exception as e:
+                        logging.error(f"Filter delete error: {e}")
+                    return  # Не передаём сообщение дальше
+        
+        return await handler(event, data)
+
+# Регистрируем middleware
+dp.message.middleware(WordFilterMiddleware())
+
 # ===================== КОМАНДЫ =====================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -319,7 +356,7 @@ async def new_member_handler(message: types.Message):
             logging.error(f"Welcome send error: {e}")
 
 # ---------- Модерация ----------
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!мут","!mute","!заткнуть","/mute","/мут") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!мут","!mute","!заткнуть") for _ in [0]))
 async def mute_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
@@ -334,7 +371,7 @@ async def mute_cmd(message: types.Message):
     except:
         await message.answer("❗ Не удалось замьютить. Проверь права бота.")
 
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!размут","!unmute","!говори","/unmute","/размут") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!размут","!unmute","!говори") for _ in [0]))
 async def unmute_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
@@ -346,7 +383,7 @@ async def unmute_cmd(message: types.Message):
         await message.answer(f"🔊 {target_name} размьючен")
     except: pass
 
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!варн","!warn","!пред","!предупреждение","/warn","/варн") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!варн","!warn","!пред","!предупреждение") for _ in [0]))
 async def warn_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
@@ -376,8 +413,8 @@ async def set_warn_limit(message: types.Message):
     nums = re.findall(r'\d+', message.text)
     if not nums: return
     limit = int(nums[0])
-    db("INSERT OR REPLACE INTO warn_settings (chat_id, max_warns, ban_duration, warn_duration) VALUES (?,?,?,?)",
-       (message.chat.id, limit, 0, 86400))
+    max_warns, ban_duration, warn_duration = get_warn_settings(message.chat.id)
+    db("UPDATE warn_settings SET max_warns=? WHERE chat_id=?", (limit, message.chat.id))
     await message.answer(f"⚜️ Лимит варнов: {limit}")
 
 @dp.message(F.text.lower().startswith("!варны чс"))
@@ -442,7 +479,7 @@ async def remove_warns_cmd(message: types.Message):
         db("DELETE FROM warns WHERE user_id=? AND chat_id=?", (target_id, message.chat.id))
         await message.answer(f"⚜️ Все варны сняты с {target_name}")
 
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!бан","!ban","!permban","!чс","/бан","/ban") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!бан","!ban","!permban","!чс") for _ in [0]))
 async def ban_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
@@ -464,7 +501,7 @@ async def ban_cmd(message: types.Message):
     except:
         await message.answer("❗ Не удалось забанить.")
 
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!разбан","!unban","/разбан","/unban") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!разбан","!unban") for _ in [0]))
 async def unban_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
@@ -488,7 +525,7 @@ async def reason_cmd(message: types.Message):
     else:
         await message.answer("Пользователь не забанен или причина отсутствует.")
 
-@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!кик","!kick","/кик","/kick") for _ in [0]))
+@dp.message(lambda msg: msg.text and any(msg.text.lower().split()[0] in ("!кик","!kick") for _ in [0]))
 async def kick_cmd(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
@@ -546,24 +583,7 @@ async def admin_demote(message: types.Message):
         await bot.promote_chat_member(message.chat.id, target_id, can_manage_chat=False)
     except: pass
 
-# ===================== ФИЛЬТР ЗАПРЕЩЁННЫХ СЛОВ =====================
-def get_forbidden_words(chat_id):
-    chat_words = [row[0] for row in db("SELECT word FROM forbidden_words WHERE chat_id=?", (chat_id,), fetch=True)]
-    return DEFAULT_FORBIDDEN + chat_words
-
-async def moderate_message(message: types.Message):
-    if not message.text: return
-    chat_id = message.chat.id
-    words = get_forbidden_words(chat_id)
-    if not words: return
-    msg_lower = message.text.lower()
-    for w in words:
-        if w in msg_lower:
-            try: await bot.delete_message(chat_id, message.message_id)
-            except: pass
-            await message.answer(f"⚠️ {message.from_user.first_name}, сообщение удалено: запрещённое слово.")
-            return
-
+# ========== Команды фильтра слов ==========
 @dp.message(F.text.lower().startswith("!запретслово"))
 async def add_forbidden_word(message: types.Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
@@ -587,14 +607,10 @@ async def del_forbidden_word(message: types.Message):
 
 @dp.message(F.text.lower().startswith("!списокзапретов"))
 async def list_forbidden_words(message: types.Message):
-    words = get_forbidden_words(message.chat.id)
+    chat_words = [row[0] for row in db("SELECT word FROM forbidden_words WHERE chat_id=?", (message.chat.id,), fetch=True)]
+    words = DEFAULT_FORBIDDEN + chat_words
     if not words: return await message.answer("Список пуст.")
     await message.answer("🔞 Запрещённые слова:\n" + ", ".join(words[:50]) + ("..." if len(words)>50 else ""))
-
-# Общий обработчик для всех текстовых сообщений (фильтр)
-@dp.message(F.text)
-async def catch_all_messages(message: types.Message):
-    await moderate_message(message)
 
 # ---------- /adminhelp ----------
 @dp.message(Command("adminhelp"))
