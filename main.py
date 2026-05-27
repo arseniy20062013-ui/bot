@@ -1,6 +1,35 @@
-import asyncio
-import aiosqlite
+import sys
+import subprocess
 import logging
+
+logging.basicConfig(level=logging.INFO)
+
+# --- АВТОМАТИЧЕСКАЯ УСТАНОВКА ЗАВИСИМОСТЕЙ ---
+# Если панель запуска изолирует бота, этот блок сам скачает нужные библиотеки
+try:
+    import aiosqlite
+except ModuleNotFoundError:
+    logging.info("⚠️ Библиотека aiosqlite не найдена! Устанавливаю автоматически...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiosqlite"])
+        import aiosqlite
+        logging.info("✅ Библиотека aiosqlite успешно установлена!")
+    except Exception as e:
+        logging.critical(f"❌ Не удалось установить aiosqlite: {e}")
+
+try:
+    import aiogram
+except ModuleNotFoundError:
+    logging.info("⚠️ Библиотека aiogram не найдена! Устанавливаю автоматически...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiogram"])
+        import aiogram
+        logging.info("✅ Библиотека aiogram успешно установлена!")
+    except Exception as e:
+        logging.critical(f"❌ Не удалось установить aiogram: {e}")
+
+# --- ИМПОРТ ОСТАЛЬНЫХ МОДУЛЕЙ ---
+import asyncio
 import time
 import re
 import os
@@ -16,10 +45,7 @@ from aiogram.types import ChatPermissions, Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
-logging.basicConfig(level=logging.INFO)
-
-# Рекомендуется выносить токен в переменные окружения. 
-# Замените заглушку на Ваш реальный токен, если не используете .env
+# --- НАСТРОЙКИ ---
 TOKEN    = os.getenv('BOT_TOKEN', '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY')
 OWNER_ID = 7173827114
 DB_NAME  = 'void_bot.db'
@@ -234,7 +260,7 @@ async def schedule_task():
                                                 can_send_polls=True, can_send_other_messages=True,
                                                 can_add_web_page_previews=True, can_change_info=True,
                                                 can_invite_users=True, can_pin_messages=True))
-                            closed_chats.discard(chat_id)
+                            closed_chats.discard(message.chat.id)
                         except: pass
         except Exception as e:
             logging.error(f"Schedule: {e}")
@@ -244,11 +270,9 @@ async def schedule_task():
 class WordFilterMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Message, data: dict):
         if event.text and event.chat.type in ('group', 'supergroup'):
-            # Пропускаем команды
             if event.text.startswith('!') or event.text.startswith('/') or event.text.startswith('-'):
                 return await handler(event, data)
 
-            # Пропускаем, если пользователь находится в процессе FSM (заполняет анкету/настройки)
             state: FSMContext = data.get("state")
             if state and await state.get_state() is not None:
                 return await handler(event, data)
@@ -259,7 +283,6 @@ class WordFilterMiddleware(BaseMiddleware):
 
             msg_lower = event.text.lower()
             for w in words:
-                # Используем поиск по границе слова, чтобы избежать ложных срабатываний (например, "корни")
                 if re.search(rf"\b{re.escape(w)}", msg_lower):
                     try:
                         user_name = event.from_user.full_name
@@ -288,7 +311,6 @@ async def set_welcome_cmd(message: types.Message, state: FSMContext):
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.answer("❌ Только для администраторов!")
     
-    # Если администратор прикрепил медиафайл и сразу написал команду /setwelcome в описании
     if message.caption and message.caption.startswith("/setwelcome"):
         file_id, media_type = None, None
         if message.photo: file_id = message.photo[-1].file_id; media_type = "photo"
@@ -314,7 +336,6 @@ async def welcome_media_handler(message: types.Message, state: FSMContext):
     else:
         return await message.answer("❌ Пожалуйста, отправьте фото, видео или гифку!")
     
-    # Если текст уже был в описании к медиа
     if message.caption:
         data = await state.get_data()
         await db("INSERT OR REPLACE INTO welcomes (chat_id, file_id, media_type, caption) VALUES (?,?,?,?)",
@@ -391,7 +412,6 @@ async def new_member_handler(message: types.Message):
         mention = f"@{member.username}" if member.username else name
         gender_verb = detect_gender_verb(member.first_name)
         
-        # Сборка приветствия
         if welcome_data:
             file_id, media_type, caption = welcome_data[0]
             text = caption.replace("{name}", name).replace("{mention}", mention).replace("{verb}", gender_verb)
@@ -410,12 +430,11 @@ async def new_member_handler(message: types.Message):
             except Exception as e:
                 logging.error(f"Welcome send error: {e}")
                 
-        # Автоматическая отправка правил
         if rules_data and rules_data[0][0]:
             await message.answer(f"Приветствуем Вас, {mention}! Пожалуйста, ознакомьтесь с правилами группы:\n\n{rules_data[0][0]}", 
                                  message_thread_id=tid(message))
 
-# --- ОСТАЛЬНЫЕ МОДЕРАЦИОННЫЕ КОМАНДЫ (ОПТИМИЗИРОВАНЫ) ---
+# --- ОСТАЛЬНЫЕ МОДЕРАЦИОННЫЕ КОМАНДЫ ---
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -694,26 +713,14 @@ async def list_forbidden_words(message: types.Message):
 @dp.message(Command("adminhelp"))
 async def admin_help(message: types.Message):
     await message.answer(
-        "⚜️⚜️⚜️⚜️⚜️⚜️⚜️⚜️\n\n"
-        "⚜️⚜️<b>Варн |период| |uz/отмет.|</b> ⚜️ выставляется одно предупреждение пользователю сроком, указанным в команде\n"
-        "Синонимы: пред, предупреждение, /warn, !warn, !пред\n"
-        "⚜️<b>Варны лимит |число|</b> ⚜️ устанавливает число предупреждений, по достижению которых пользователь исключается из беседы\n"
-        "⚜️<b>Варны чс |период|</b> ⚜️ устанавливает срок бана по достижению лимита предупреждений\n"
-        "⚜️<b>Варны |uz/отмет.|</b> ⚜️ выводится список текущих предупреждений пользователя\n"
-        "⚜️<b>Варны период |период|</b> ⚜️ устанавливает срок хранения предупреждения\n"
-        "⚜️<b>Снять варны |число| |uz/отмет.|</b> ⚜️ чтобы снять определенное число варнов пользователя\n"
-        "⚜️<b>Снять варны |uz/отмет.|</b> ⚜️ чтобы снять все варны с пользователя\n"
-        "⚜️<b>Варны помощь</b> ⚜️ выводит справку по командам модуля «Предупреждения»\n\n"
-        "⚜️⚜️<b>Мут |срок| |uz/отмет.|</b> ⚜️ принудить пользователя к молчанию на определённый период\n"
-        "⚜️<b>Снять мут |uz/отмет.|</b> ⚜️ снять мут\n"
-        "⚜️⚜️<b>Бан |период| |uz/отмет.|</b> ⚜️ забанит пользователя на заданный период времени. По умолчанию — навсегда.\n"
-        "⚜️<b>Разбан |uz/отмет.|</b> ⚜️ снимает бан с пользователя\n"
-        "⚜️<b>Причина |uz/отмет.|</b>  ⚜️ выводит причину, указанную при бане пользователя\n"
-        "⚜️<b>Кик |uz/отмет.|</b>  ⚜️ исключает пользователя из беседы без бана.\n\n"
-        "🔞 <b>Фильтр слов и правила:</b>\n"
-        "/setwelcome — Настройка приветствия\n"
-        "!установитьправила — Настройка отправляемых правил",
-        parse_mode="HTML"
+        "<b>Административные команды:</b>\n\n"
+        "⚜️ <b>Мут</b>: !мут 1ч @uz | !размут @uz\n"
+        "⚜️ <b>Варны</b>: !варн 1д @uz | !снять варны @uz\n"
+        "⚜️ <b>Бан</b>: !бан 7д @uz [причина] | !разбан @uz\n"
+        "🔞 <b>Фильтры</b>: !запретслово [слово] | !разрешслово [слово]\n"
+        "🎉 <b>Настройки группы</b>:\n"
+        "/setwelcome — Настроить приветственное медиа\n"
+        "!установитьправила — Настроить правила для новых участников"
     )
 
 @dp.message(Command("setautoschedule"))
