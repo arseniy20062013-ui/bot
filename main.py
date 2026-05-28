@@ -37,7 +37,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command, StateFilter
-from aiogram.types import ChatPermissions, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ChatPermissions, Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
@@ -307,8 +307,8 @@ async def help_cmd(message: types.Message):
         "⚙️ <b>Конфигурация (Настройки):</b>\n"
         "• <code>/setwelcome</code> — Настроить медиа-приветствие новых людей\n"
         "• <code>/delwelcome</code> — Полностью отключить приветствие\n"
-        "• <code>!установитьправила</code> — Записать регламент сообщества\n"
-        "• <code>!правила</code> — Вывести правила группы (доступно всем)\n"
+        "• <code>/set rules [текст]</code> или <code>!установитьправила</code> — Записать регламент\n"
+        "• <code>/rules</code> или <code>!правила</code> — Вывести правила группы\n"
         "• <code>!отмена</code> — Прервать настройку приветствия/правил если бот завис"
     )
 
@@ -364,14 +364,23 @@ async def del_welcome_cmd(message: types.Message):
     await db("DELETE FROM welcomes WHERE chat_id=?", (message.chat.id,))
     await message.answer("🗑️ Медиа-приветствие успешно отключено.")
 
-@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!установитьправила", "/setrules"))
+# Обработка /set rules и !установитьправила
+@dp.message(lambda msg: msg.text and (msg.text.lower().startswith("/set rules") or msg.text.lower().split()[0] in ("!установитьправила", "/setrules")))
 async def set_rules_cmd(message: types.Message, state: FSMContext):
     if message.chat.type not in ("group","supergroup"): return
     if not await is_admin(message.chat.id, message.from_user.id): return
     
-    parts = message.text.split(maxsplit=1)
-    if len(parts) > 1:
-        await db("INSERT OR REPLACE INTO rules (chat_id, rules_text) VALUES (?, ?)", (message.chat.id, parts[1].strip()))
+    text = message.text.strip()
+    # Проверяем, как была вызвана команда, чтобы правильно отсечь команду от текста правил
+    if text.lower().startswith("/set rules"):
+        parts = text.split(maxsplit=2)
+        rules_text = parts[2] if len(parts) > 2 else ""
+    else:
+        parts = text.split(maxsplit=1)
+        rules_text = parts[1] if len(parts) > 1 else ""
+        
+    if rules_text:
+        await db("INSERT OR REPLACE INTO rules (chat_id, rules_text) VALUES (?, ?)", (message.chat.id, rules_text.strip()))
         return await message.answer("<b>✅ РЕГЛАМЕНТ И ПРАВИЛА ЧАТА ОБНОВЛЕНЫ!</b>")
         
     await state.set_state(RulesSetup.waiting_for_rules)
@@ -388,7 +397,7 @@ async def rules_text_handler(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("<b>✅ ПРАВИЛА ЧАТА БЛАГОПОЛУЧНО СОХРАНЕНЫ!</b>")
 
-@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!правила", "/rules"))
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!правила", "/rules") or msg.text.lower().startswith("/rules@"))
 async def show_rules_cmd(message: types.Message):
     r = await db("SELECT rules_text FROM rules WHERE chat_id=?", (message.chat.id,), fetch=True)
     if r and r[0][0]:
@@ -580,29 +589,39 @@ async def list_forbidden_words(message: types.Message):
     await message.answer("🔞 <b>СПИСОК ФИЛЬТРУЕМЫХ СЛОВ ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
 
 
-# --- СИСТЕМНЫЙ ВХОД УЧАСТНИКОВ ---
+# --- СИСТЕМНЫЙ ВХОД УЧАСТНИКОВ И ВЕРИФИКАЦИЯ ---
 @dp.message(F.new_chat_members)
 async def new_member_handler(message: types.Message):
     chat_id = message.chat.id
     welcome_data = await db("SELECT file_id, media_type, caption FROM welcomes WHERE chat_id=?", (chat_id,), fetch=True)
     bot_info = await bot.get_me()
-    
-    # Конфигурация интерактивных inline-кнопок под сообщением
-    welcome_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_info.username}"),
-            InlineKeyboardButton(text="🛡 Пройти верификацию", url=f"https://t.me/{bot_info.username}?start=verify")
-        ]
-    ])
 
     for member in message.new_chat_members:
         if member.is_bot: continue
+        
+        # 1. СРАЗУ ОГРАНИЧИВАЕМ ПРАВА (включаем мут), пока не пройдена верификация
+        try:
+            await bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=member.id,
+                permissions=ChatPermissions(can_send_messages=False)
+            )
+        except Exception as e:
+            logging.error(f"Failed to restrict new member: {e}")
+
         name = member.first_name or "Участник"
         mention = f'<a href="tg://user?id={member.id}">{name}</a>'
         gender_verb = detect_gender_verb(member.first_name)
         
+        # Интерактивные inline-кнопки (Кнопка верификации шлет callback)
+        welcome_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_info.username}"),
+                InlineKeyboardButton(text="🛡 Пройти верификацию", callback_data=f"verify_{member.id}")
+            ]
+        ])
+        
         if welcome_data:
-            # Если в базе уже сохранено медиа через /setwelcome
             file_id, media_type, caption = welcome_data[0]
             text = caption.replace("{name}", name).replace("{mention}", mention).replace("{verb}", gender_verb)
             try:
@@ -620,12 +639,59 @@ async def new_member_handler(message: types.Message):
             except Exception as e:
                 logging.error(f"Welcome media send error: {e}")
         else:
-            # Текст по умолчанию (если медиа-файл еще не загружен администратором)
             default_text = (
                 f"👋 Привет, {mention}! Рады, что ты <b>{gender_verb}</b> в чат мессенджера VOID!\n\n"
                 f"⚠️ Обязательно посмотри правила через команду /rules, ИЛИ ЖЕ в отдельной ветке сообщества!"
             )
             await message.answer(default_text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
+
+
+# --- ОБРАБОТКА НАЖАТИЯ НА КНОПКУ ВЕРИФИКАЦИИ ---
+@dp.callback_query(F.data.startswith("verify_"))
+async def process_verification(callback: CallbackQuery):
+    target_user_id = int(callback.data.split("_")[1])
+    clicker_user_id = callback.from_user.id
+    
+    # Проверяем, что кнопку нажал именно тот новичок, для которого она была создана
+    if clicker_user_id != target_user_id:
+        return await callback.answer("❌ Эта кнопка создана для другого участника!", show_alert=True)
+        
+    chat_id = callback.message.chat.id
+    
+    try:
+        # Возвращаем полные права писать сообщения
+        await bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=clicker_user_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_send_polls=True
+            )
+        )
+        
+        # Уведомляем пользователя
+        await callback.answer("✅ Верификация пройдена! Вы можете успешно писать.", show_alert=True)
+        
+        # Обновляем клавиатуру, чтобы кнопка сменилась на галочку
+        bot_info = await bot.get_me()
+        verified_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_info.username}"),
+                InlineKeyboardButton(text="✅ Пройдено", callback_data="already_verified")
+            ]
+        ])
+        
+        await callback.message.edit_reply_markup(reply_markup=verified_keyboard)
+        
+    except Exception as e:
+        logging.error(f"Verification error: {e}")
+        await callback.answer("❌ Ошибка верификации. Возможно, у бота нет прав администратора.", show_alert=True)
+
+@dp.callback_query(F.data == "already_verified")
+async def process_already_verified(callback: CallbackQuery):
+    await callback.answer("Этот пользователь уже успешно верифицирован!", show_alert=False)
 
 
 # --- ТОЧКА ЗАПУСКА С ДЕИНСТАЛЛЯЦИЕЙ СТАРЫХ КОМАНД ---
@@ -634,7 +700,7 @@ async def main():
     
     try: 
         await bot.delete_my_commands()
-        logging.info("♻️ Старые подсказки команд успешно удалены.")
+        logging.info("♻️ Подсказки команд успешно сброшены.")
     except Exception as e:
         logging.error(f"Не удалось удалить старые команды: {e}")
         
