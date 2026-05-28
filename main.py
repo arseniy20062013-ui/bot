@@ -262,18 +262,18 @@ async def help_cmd(message: Message):
     await message.answer(
         "<b>⚔️ МЕНЮ КОМАНД VOID HELPER</b>\n\n"
         "🛡 <b>Администрация (Модерация чата):</b>\n"
-        "• <code>!мут [время] [цель]</code> — Режим чтения\n"
-        "• <code>!размут [цель]</code> — Снять ограничение чата\n"
+        "• <code>!мут [время] [цель]</code> — Выдать мут (запрет писать)\n"
+        "• <code>!размут [цель]</code> — Снять мут с участника\n"
         "• <code>!варн [время] [цель]</code> — Выдать предупреждение\n"
         "• <code>!снять варны [цель]</code> — Обнулить предупреждения\n"
-        "• <code>!бан [время?] [цель] [причина]</code> — Блокировка в группе\n"
-        "• <code>!разбан [цель]</code> — Помиловать участника\n"
+        "• <code>!бан [время?] [цель] [причина]</code> — Блокировка (Бан в группе)\n"
+        "• <code>!разбан [цель]</code> — Помиловать участника (Разбан)\n"
         "• <code>!кик [цель]</code> — Исключить из группы\n"
         "• <code>!банлист</code> — Список забаненных аккаунтов\n"
         "• <code>!амнистия</code> — Полная очистка ЧС\n\n"
-        "📅 <b>Авторасписание (Ночной замок чата по МСК):</b>\n"
-        "• <code>/setautoschedule [время_закрытия] [время_открытия]</code> — Включить режим замка чата (Пример: <i>/setautoschedule 23:00 07:00</i>)\n"
-        "• <code>/check_schedule</code> — Проверить настройки времени и статус чата\n"
+        "📅 <b>Авторасписание (Ночной мут чата по МСК):</b>\n"
+        "• <code>/setautoschedule [время_закрытия] [время_открытия]</code> — Включить режим автомута чата (Пример: <i>/setautoschedule 23:00 07:00</i>)\n"
+        "• <code>/check_schedule</code> — Проверить настройки времени и статус блокировки\n"
         "• <code>/delautoschedule</code> — Полностью выключить расписание чата\n\n"
         "🚫 <b>Фильтрация мата и слов:</b>\n"
         "• <code>!запретслово [слово]</code> — Внести фразу в чёрный список\n"
@@ -398,9 +398,9 @@ async def mute_cmd(message: Message):
     until = datetime.now(timezone.utc) + timedelta(seconds=duration)
     try:
         await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
-        await message.answer(f"🔇 Участник <b>{target_name}</b> переведен в режим чтения на {duration//60} минут.")
+        await message.answer(f"🔇 Участнику <b>{target_name}</b> успешно выдан <b>мут</b> на {duration//60} минут.")
     except:
-        await message.answer("❌ Не удалось ограничить права пользователя.")
+        await message.answer("❌ Не удалось замутить пользователя.")
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!размут","!unmute"))
 async def unmute_cmd(message: Message):
@@ -411,7 +411,7 @@ async def unmute_cmd(message: Message):
     if not target_id: return
     try:
         await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_send_polls=True))
-        await message.answer(f"🔊 Право отправки сообщений для <b>{target_name}</b> восстановлено.")
+        await message.answer(f"🔊 Мут с пользователя <b>{target_name}</b> успешно снят.")
     except: pass
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!варн","!warn"))
@@ -435,7 +435,7 @@ async def warn_cmd(message: Message):
         await db("INSERT OR REPLACE INTO bans (user_id, chat_id, reason, banned_until) VALUES (?,?,?,?)", (target_id, message.chat.id, reason, until))
         try:
             await bot.ban_chat_member(message.chat.id, target_id, until_date=None if until==0 else datetime.fromtimestamp(until, tz=timezone.utc))
-            await message.answer(f"🚫 {target_name} автоматически заблокирован за систематические нарушения.")
+            await message.answer(f"🚫 {target_name} автоматически забанен за систематические нарушения.")
         except: pass
 
 @dp.message(F.text.lower().startswith("!варны лимит"))
@@ -472,7 +472,7 @@ async def ban_cmd(message: Message):
     await db("INSERT OR REPLACE INTO bans (user_id, chat_id, reason, banned_until) VALUES (?,?,?,?)", (target_id, message.chat.id, reason, banned_until))
     try:
         await bot.ban_chat_member(message.chat.id, target_id, until_date=None if not duration else datetime.fromtimestamp(banned_until, tz=timezone.utc))
-        msg = f"🚫 Пользователь <b>{target_name}</b> заблокирован"
+        msg = f"🚫 Пользователь <b>{target_name}</b> отправлен в <b>БАН</b>"
         if duration: msg += f" на {duration//3600}ч"
         msg += f"\n📝 Причина: {reason}"
         await message.answer(msg)
@@ -489,7 +489,7 @@ async def unban_cmd(message: Message):
     await db("DELETE FROM bans WHERE user_id=? AND chat_id=?", (target_id, message.chat.id))
     try:
         await bot.unban_chat_member(message.chat.id, target_id)
-        await message.answer(f"✅ Пользователь {target_name} амнистирован.")
+        await message.answer(f"✅ Пользователь {target_name} успешно разбанен.")
     except: pass
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!кик","!kick"))
@@ -514,12 +514,12 @@ async def amnesty_cmd(message: Message):
         try: await bot.unban_chat_member(message.chat.id, uid)
         except: pass
     await db("DELETE FROM bans WHERE chat_id=?", (message.chat.id,))
-    await message.answer("🔓 <b>Глобальная амнистия:</b> ЧС чата полностью очищен.")
+    await message.answer("🔓 <b>Глобальная амнистия:</b> Бан-лист чата полностью очищен.")
 
 @dp.message(F.text.lower().startswith("!банлист"))
 async def banlist_cmd(message: Message):
     rows = await db("SELECT user_id, reason, banned_until FROM bans WHERE chat_id=?", (message.chat.id,), fetch=True)
-    if not rows: return await message.answer("📭 Список заблокированных пользователей пуст.")
+    if not rows: return await message.answer("📭 Список забаненных пользователей пуст.")
     lines = []
     for uid, reason, until in rows:
         try:
@@ -578,7 +578,7 @@ async def set_auto_schedule_cmd(message: Message):
         
     await db("INSERT OR REPLACE INTO schedules (chat_id, close_time, open_time, is_enabled, last_state) VALUES (?, ?, ?, 1, '')", 
              (message.chat.id, close_time, open_time))
-    await message.answer(f"🔒 <b>Авторасписание успешно установлено (по МСК):</b>\n🌙 Закрытие чата: <b>{close_time}</b>\n☀️ Открытие чата: <b>{open_time}</b>\n\nБот автоматически переключит права группы в указанные минуты!")
+    await message.answer(f"🔒 <b>Авторасписание успешно установлено (по МСК):</b>\n🌙 Начало мута чата: <b>{close_time}</b>\n☀️ Снятие мута чата: <b>{open_time}</b>\n\nБот автоматически заблокирует/разблокирует отправку сообщений в указанное время!")
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!проверитьрасписание", "/check_schedule"))
 async def check_schedule_cmd(message: Message):
@@ -592,11 +592,11 @@ async def check_schedule_cmd(message: Message):
         return await message.answer(f"📅 <b>Авторасписание чата:</b> Отключено.\n⏰ Текущее время по МСК: <code>{now_msk}</code>")
         
     close_time, open_time, is_enabled, last_state = r[0]
-    status = "🌙 Чат закрыт по ночному графику" if last_state == "closed" else "☀️ Чат открыт для общения"
+    status = "🌙 Чат отправлен в МУТ по ночному графику" if last_state == "closed" else "☀️ Чат открыт для общения"
     await message.answer(
         f"📅 <b>АВТОРАСПИСАНИЕ ЧАТА (МСК)</b>\n\n"
-        f"🌙 Время закрытия: <b>{close_time}</b>\n"
-        f"☀️ Время открытия: <b>{open_time}</b>\n"
+        f"🌙 Время мута: <b>{close_time}</b>\n"
+        f"☀️ Время размута: <b>{open_time}</b>\n"
         f"⚙️ Текущее состояние: <b>{status}</b>\n"
         f"⏰ Текущее время по МСК: <code>{now_msk}</code>"
     )
@@ -660,7 +660,7 @@ async def new_member_handler(message: Message):
         default_text = (
             f"👋 Привет, {mention}!\n\n"
             f"Рады, что ты <b>{gender_verb}</b> в чат мессенджера VOID!\n"
-            f"⚠️ Нажми кнопку <b>«🛡 Пройти верификацию»</b> ниже, чтобы разблокировать отправку сообщений."
+            f"⚠️ Нажми кнопку <b>«🛡 Пройти верификацию»</b> ниже, чтобы снять мут и начать писать."
         )
         try:
             await bot.send_message(chat_id, default_text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
@@ -688,12 +688,12 @@ async def process_verification(callback: CallbackQuery):
             )
         )
         
-        await callback.answer("✅ Верификация успешно пройдена!", show_alert=True)
+        await callback.answer("✅ Мут успешно снят!", show_alert=True)
         
         user_name = callback.from_user.first_name or "Участник"
         user_mention = f'<a href="tg://user?id={clicker_user_id}">{user_name}</a>'
         await callback.message.answer(
-            f"🎉 {user_mention} успешно верифицировался, можешь писать!",
+            f"🎉 С {user_mention} сняли мут, верификация пройдена!",
             message_thread_id=tid(callback.message)
         )
         
@@ -707,7 +707,7 @@ async def process_verification(callback: CallbackQuery):
         
     except Exception as e:
         logging.error(f"Unmute error: {e}")
-        await callback.answer("❌ Ошибка размута. Проверьте права бота в администраторах чата!", show_alert=True)
+        await callback.answer("❌ Ошибка. Проверьте права бота в администраторах чата!", show_alert=True)
 
 @dp.callback_query(F.data == "already_verified")
 async def process_already_verified(callback: CallbackQuery):
@@ -732,9 +732,9 @@ async def auto_schedule_checker():
                     h_open, m_open = map(int, open_time.split(':'))
                     m_open_total = h_open * 60 + m_open
                     
-                    if m_close_total > m_open_total:  # Закрытие ночью (например, с 23:00 до 06:00)
+                    if m_close_total > m_open_total:  # Мут ночью (например, с 23:00 до 06:00)
                         should_be_closed = (m_now >= m_close_total or m_now < m_open_total)
-                    else:  # Дневное закрытие чата (например, с 14:00 до 16:00)
+                    else:  # Дневной мут чата (например, с 14:00 до 16:00)
                         should_be_closed = (m_close_total <= m_now < m_open_total)
                         
                     target_state = "closed" if should_be_closed else "opened"
@@ -742,7 +742,7 @@ async def auto_schedule_checker():
                     if last_state != target_state:
                         if target_state == "closed":
                             await bot.set_chat_permissions(chat_id, ChatPermissions(can_send_messages=False))
-                            await bot.send_message(chat_id, "🌙 <b>Внимание! Чат автоматически закрыт согласно расписанию (МСК).</b>\nДо встречи утром! 👋")
+                            await bot.send_message(chat_id, "🌙 <b>Внимание! Чат автоматически отправлен в глобальный МУТ согласно расписанию (МСК).</b>\nДо встречи утром! 👋")
                         else:
                             await bot.set_chat_permissions(
                                 chat_id, 
@@ -753,7 +753,7 @@ async def auto_schedule_checker():
                                     can_send_polls=True
                                 )
                             )
-                            await bot.send_message(chat_id, "☀️ <b>Доброе утро! Чат автоматически открыт (МСК).</b>\nВсем отличного дня и приятного общения! 💬")
+                            await bot.send_message(chat_id, "☀️ <b>Мут чата успешно снят согласно расписанию (МСК).</b>\nВсем отличного дня и приятного общения! 💬")
                         
                         await db("UPDATE schedules SET last_state=? WHERE chat_id=?", (target_state, chat_id))
                 except Exception as chat_err:
