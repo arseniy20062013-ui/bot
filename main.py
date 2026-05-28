@@ -1,37 +1,22 @@
+import os
 import sys
-import subprocess
-import logging
-
-logging.basicConfig(level=logging.INFO)
-
-# --- АВТОМАТИЧЕСКАЯ УСТАНОВКА ЗАВИСИМОСТЕЙ ---
-try:
-    import aiosqlite
-except ModuleNotFoundError:
-    logging.info("⚠️ Библиотека aiosqlite не найдена! Устанавливаю автоматически...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiosqlite"])
-        import aiosqlite
-    except Exception as e:
-        logging.critical(f"❌ Не удалось установить aiosqlite: {e}")
-
-try:
-    import aiogram
-except ModuleNotFoundError:
-    logging.info("⚠️ Библиотека aiogram не найдена! Устанавливаю автоматически...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "aiogram"])
-        import aiogram
-    except Exception as e:
-        logging.critical(f"❌ Не удалось установить aiogram: {e}")
-
-import asyncio
 import time
 import re
-import os
+import asyncio
+import logging
+import subprocess
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
 
+# Автоматический доставищик модулей, если запускаешь на чистом Pydroid
+for module in ['aiosqlite', 'aiogram']:
+    try:
+        __import__(module)
+    except ModuleNotFoundError:
+        logging.info(f"Установка недостающего модуля: {module}")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", module])
+
+import aiosqlite
 from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -41,11 +26,12 @@ from aiogram.types import ChatPermissions, Message, InlineKeyboardMarkup, Inline
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
-# --- НАСТРОЙКИ ---
-TOKEN    = os.getenv('BOT_TOKEN', '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY')
+# Конфиг авторизации и доступов
+TOKEN = os.getenv('BOT_TOKEN', '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY')
 OWNER_ID = 7173827114
-DB_NAME  = 'void_bot.db'
+DB_NAME = 'void_bot.db'
 
+# Базовый черный список слов
 DEFAULT_FORBIDDEN = [
     "камшот", "камшоты", "камшотов", "гетеро", "гетеросексуальность", "джонуанство",
     "импотенция", "интим", "интимность", "интроитус", "клитор", "клитора", "клиторов",
@@ -96,7 +82,8 @@ session = AiohttpSession(timeout=60)
 bot = Bot(token=TOKEN, session=session, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=storage)
 
-# --- АСИНХРОННЫЙ ДВИЖОК БАЗЫ ДАННЫХ ---
+logging.basicConfig(level=logging.INFO)
+
 async def db(query: str, params: tuple = (), fetch: bool = False):
     try:
         async with aiosqlite.connect(DB_NAME) as conn:
@@ -105,11 +92,11 @@ async def db(query: str, params: tuple = (), fetch: bool = False):
                     return await cur.fetchall()
                 await conn.commit()
     except Exception as e:
-        logging.error(f"Database Async Error: {e}")
+        logging.error(f"DB Error: {e}")
     return [] if fetch else False
 
 async def init_db():
-    tables = [
+    queries = [
         'CREATE TABLE IF NOT EXISTS warns (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, chat_id INTEGER, issued_at INTEGER, expires_at INTEGER)',
         'CREATE TABLE IF NOT EXISTS warn_settings (chat_id INTEGER PRIMARY KEY, max_warns INTEGER DEFAULT 3, ban_duration INTEGER DEFAULT 0, warn_duration INTEGER DEFAULT 86400)',
         'CREATE TABLE IF NOT EXISTS bans (user_id INTEGER, chat_id INTEGER, reason TEXT DEFAULT "", banned_until INTEGER DEFAULT 0, PRIMARY KEY(user_id,chat_id))',
@@ -117,25 +104,24 @@ async def init_db():
         'CREATE TABLE IF NOT EXISTS forbidden_words (chat_id INTEGER, word TEXT, PRIMARY KEY(chat_id, word))',
         'CREATE TABLE IF NOT EXISTS rules (chat_id INTEGER PRIMARY KEY, rules_text TEXT)'
     ]
-    for sql in tables:
-        await db(sql)
+    for q in queries:
+        await db(q)
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def is_admin(chat_id: int, user_id: int) -> bool:
     if user_id == OWNER_ID:
         return True
     try:
-        m = await bot.get_chat_member(chat_id, user_id)
-        return m.status in ("administrator", "creator")
+        member = await bot.get_chat_member(chat_id, user_id)
+        return member.status in ("administrator", "creator")
     except:
-        return user_id == OWNER_ID
+        return False
 
-def tid(message: types.Message) -> Optional[int]:
+def tid(message: Message) -> Optional[int]:
     return message.message_thread_id
 
 def detect_gender_verb(first_name: str) -> str:
     if not first_name:
-        return "зашёл(ла)"
+        return "присоединился(ась)"
     name_lower = first_name.strip().lower()
     male_exceptions = {
         "никита", "илья", "лука", "фома", "савва", "данила", "данило",
@@ -148,7 +134,7 @@ def detect_gender_verb(first_name: str) -> str:
         return "зашла"
     return "зашёл"
 
-async def resolve_target_from_reply(message: types.Message):
+async def resolve_target_from_reply(message: Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         return u.id, u.first_name
@@ -190,10 +176,7 @@ def extract_duration(text: str) -> Tuple[Optional[int], str]:
         return sec, cleaned.strip()
     return None, text
 
-async def parse_duration(duration_str: str) -> int:
-    return extract_duration(duration_str)[0] or 3600
-
-async def parse_moderation_args(message: types.Message):
+async def parse_moderation_args(message: Message):
     text = message.text.strip()
     parts = text.split(maxsplit=1)
     args_str = parts[1] if len(parts) > 1 else ""
@@ -216,7 +199,8 @@ async def parse_moderation_args(message: types.Message):
 
 async def get_warn_settings(chat_id):
     r = await db("SELECT max_warns, ban_duration, warn_duration FROM warn_settings WHERE chat_id=?", (chat_id,), fetch=True)
-    if r: return r[0]
+    if r: 
+        return r[0]
     await db("INSERT INTO warn_settings (chat_id) VALUES (?)", (chat_id,))
     return (3, 0, 86400)
 
@@ -225,8 +209,6 @@ async def get_active_warns(uid, chat_id):
     r = await db("SELECT COUNT(*) FROM warns WHERE user_id=? AND chat_id=? AND expires_at > ?", (uid, chat_id, now), fetch=True)
     return r[0][0] if r else 0
 
-
-# --- МИДЛВАРЬ ДЛЯ ФИЛЬТРАЦИИ СЛОВ ---
 class WordFilterMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: Message, data: dict):
         if not event.text or event.chat.type not in ('group', 'supergroup'):
@@ -248,8 +230,7 @@ class WordFilterMiddleware(BaseMiddleware):
         for w in words:
             if re.search(rf"\b{re.escape(w)}", msg_lower):
                 try:
-                    user_name = event.from_user.full_name
-                    user_link = f'<a href="tg://user?id={event.from_user.id}">{user_name}</a>'
+                    user_link = f'<a href="tg://user?id={event.from_user.id}">{event.from_user.full_name}</a>'
                     await event.answer(
                         f"🗑 <b>Сообщение от {user_link} удалено</b>\n"
                         f"📝 <i>Текст:</i> {event.text}\n"
@@ -257,37 +238,30 @@ class WordFilterMiddleware(BaseMiddleware):
                         disable_web_page_preview=True
                     )
                     await bot.delete_message(chat_id, event.message_id)
-                except Exception as e:
-                    logging.error(f"Filter delete error: {e}")
+                except:
+                    pass
                 return 
-
         return await handler(event, data)
 
 dp.message.middleware(WordFilterMiddleware())
 
-
-# --- ГЛОБАЛЬНАЯ КОМАНДА ОТМЕНЫ ДЛЯ СОСТОЯНИЙ (FSM) ---
-@dp.message(Command("cancel"))
+@dp.message(Command("cancel", prefix="!/"))
 @dp.message(lambda msg: msg.text and msg.text.lower().strip() in ("!отмена", "отмена"))
-async def cancel_handler(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        return
-    await state.clear()
-    await message.answer("<b>📥 Настройка прервана.</b> Бот вернулся в штатный режим работы.")
+async def cancel_handler(message: Message, state: FSMContext):
+    if await state.get_state() is not None:
+        await state.clear()
+        await message.answer("<b>📥 Настройка прервана.</b> Бот вернулся в штатный режим.")
 
-
-# --- ОСНОВНЫЕ СИСТЕМНЫЕ КОМАНДЫ ПОМОЩИ ---
-@dp.message(Command("start"))
-async def start_cmd(message: types.Message):
+@dp.message(Command("start", prefix="!/"))
+async def start_cmd(message: Message):
     await message.answer(
         "<b>🦾 Приветствую! Я VOID Helper.</b>\n"
         "Специализированный бот для модерации, защиты от мата и ведения правил группы.\n\n"
         "ℹ️ Добавьте меня в админы группы и введите команду: <code>!help</code>"
     )
 
-@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!help", "/help", "!помощь"))
-async def help_cmd(message: types.Message):
+@dp.message(Command("help", "помощь", prefix="!/"))
+async def help_cmd(message: Message):
     await message.answer(
         "<b>⚔️ МЕНЮ КОМАНД VOID HELPER</b>\n\n"
         "🛡 <b>Администрация (Модерация чата):</b>\n"
@@ -305,38 +279,43 @@ async def help_cmd(message: types.Message):
         "• <code>!разрешслово [слово]</code> — Убрать слово из фильтрации\n"
         "• <code>!списокзапретов</code> — Посмотреть базу запрещенных слов чата\n\n"
         "⚙️ <b>Конфигурация (Настройки):</b>\n"
-        "• <code>/setwelcome</code> — Настроить медиа-приветствие новых людей\n"
-        "• <code>/delwelcome</code> — Полностью отключить приветствие\n"
+        "• <code>/setwelcome</code> — Наставить медиа-приветствие\n"
+        "• <code>/delwelcome</code> — Отключить приветствие\n"
         "• <code>/set rules [текст]</code> или <code>!установитьправила</code> — Записать регламент\n"
         "• <code>/rules</code> или <code>!правила</code> — Вывести правила группы\n"
-        "• <code>!отмена</code> — Прервать настройку приветствия/правил если бот завис"
+        "• <code>!отмена</code> — Прервать настройку"
     )
 
-
-# --- УПРАВЛЕНИЕ ПРИВЕТСТВИЯМИ И ПРАВИЛАМИ ЧАТА ---
-@dp.message(Command("setwelcome"))
-async def set_welcome_cmd(message: types.Message, state: FSMContext):
+@dp.message(Command("setwelcome", prefix="!/"))
+async def set_welcome_cmd(message: Message, state: FSMContext):
     if message.chat.type not in ("group", "supergroup"): return
     if not await is_admin(message.chat.id, message.from_user.id):
         return await message.answer("❌ Настройка доступна только администраторам.")
     
     await state.set_state(WelcomeSetup.waiting_for_media)
-    await state.update_data(chat_id=message.chat.id)
-    await message.answer("<b>🎉 НАСТРОЙКА ПРИВЕТСТВИЯ</b>\n📸 Отправьте фото, видео или GIF-анимацию.\n\n<i>Для отмены настройки напишите: <code>!отмена</code></i>")
+    await state.update_data(chat_id=message.chat.id, admin_id=message.from_user.id)
+    await message.answer("<b>🎉 НАСТРОЙКА ПРИВЕТСТВИЯ</b>\n📸 Отправьте фото, видео или GIF-анимацию.\n\n<i>Для отмены напишите: <code>!отмена</code></i>")
 
 @dp.message(WelcomeSetup.waiting_for_media)
-async def welcome_media_handler(message: types.Message, state: FSMContext):
-    if not await is_admin(message.chat.id, message.from_user.id): return
-    
+async def welcome_media_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get('admin_id'): 
+        return # Игнорируем сообщения сторонних пользователей чата
+
     file_id, media_type = None, None
-    if message.photo: file_id = message.photo[-1].file_id; media_type = "photo"
-    elif message.video: file_id = message.video.file_id; media_type = "video"
-    elif message.animation: file_id = message.animation.file_id; media_type = "animation"
+    if message.photo: 
+        file_id = message.photo[-1].file_id
+        media_type = "photo"
+    elif message.video: 
+        file_id = message.video.file_id
+        media_type = "video"
+    elif message.animation: 
+        file_id = message.animation.file_id
+        media_type = "animation"
     else:
-        return
+        return await message.answer("❌ Неверный формат. Пожалуйста, пришлите изображение, видео или анимацию.")
     
     if message.caption:
-        data = await state.get_data()
         await db("INSERT OR REPLACE INTO welcomes (chat_id, file_id, media_type, caption) VALUES (?,?,?,?)",
                  (data['chat_id'], file_id, media_type, message.caption.strip()))
         await state.clear()
@@ -344,34 +323,46 @@ async def welcome_media_handler(message: types.Message, state: FSMContext):
         
     await state.update_data(file_id=file_id, media_type=media_type)
     await state.set_state(WelcomeSetup.waiting_for_text)
-    await message.answer("✅ Отлично, медиа получено!\n📝 Теперь отправьте текст, который будет выводиться под ним.")
+    await message.answer("✅ Медиа получено!\n📝 Теперь отправьте текст приветствия.")
 
 @dp.message(WelcomeSetup.waiting_for_text)
-async def welcome_text_handler(message: types.Message, state: FSMContext):
-    if not await is_admin(message.chat.id, message.from_user.id): return
+async def welcome_text_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get('admin_id'): return
     if not message.text: return
     
-    data = await state.get_data()
     await db("INSERT OR REPLACE INTO welcomes (chat_id, file_id, media_type, caption) VALUES (?,?,?,?)",
        (data['chat_id'], data['file_id'], data['media_type'], message.text.strip()))
     await state.clear()
     await message.answer("<b>✅ ПРИВЕТСТВИЕ ПОЛНОСТЬЮ УСТАНОВЛЕНО!</b>")
 
-@dp.message(Command("delwelcome"))
-async def del_welcome_cmd(message: types.Message):
+@dp.message(Command("delwelcome", prefix="!/"))
+async def del_welcome_cmd(message: Message):
     if message.chat.type not in ("group","supergroup"): return
     if not await is_admin(message.chat.id, message.from_user.id): return
     await db("DELETE FROM welcomes WHERE chat_id=?", (message.chat.id,))
     await message.answer("🗑️ Медиа-приветствие успешно отключено.")
 
-# Обработка /set rules и !установитьправила
+@dp.message(Command("rules", prefix="!/"))
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!правила", "!rules"))
+async def show_rules_cmd(message: Message):
+    # Проверка: это команда установки правил или обычный вызов правил?
+    text = message.text.strip()
+    if text.lower().startswith(("/set rules", "!установитьправила", "/setrules")):
+        return # Перенаправляем в логику установки
+
+    r = await db("SELECT rules_text FROM rules WHERE chat_id=?", (message.chat.id,), fetch=True)
+    if r and r[0][0]:
+        await message.answer(f"📋 <b>ПРАВИЛА И РЕГЛАМЕНТ ЧАТА:</b>\n\n{r[0][0]}")
+    else:
+        await message.answer("📭 Для данной группы правила ещё не были настроены администрацией.")
+
 @dp.message(lambda msg: msg.text and (msg.text.lower().startswith("/set rules") or msg.text.lower().split()[0] in ("!установитьправила", "/setrules")))
-async def set_rules_cmd(message: types.Message, state: FSMContext):
+async def set_rules_cmd(message: Message, state: FSMContext):
     if message.chat.type not in ("group","supergroup"): return
     if not await is_admin(message.chat.id, message.from_user.id): return
     
     text = message.text.strip()
-    # Проверяем, как была вызвана команда, чтобы правильно отсечь команду от текста правил
     if text.lower().startswith("/set rules"):
         parts = text.split(maxsplit=2)
         rules_text = parts[2] if len(parts) > 2 else ""
@@ -384,31 +375,21 @@ async def set_rules_cmd(message: types.Message, state: FSMContext):
         return await message.answer("<b>✅ РЕГЛАМЕНТ И ПРАВИЛА ЧАТА ОБНОВЛЕНЫ!</b>")
         
     await state.set_state(RulesSetup.waiting_for_rules)
-    await state.update_data(chat_id=message.chat.id)
+    await state.update_data(chat_id=message.chat.id, admin_id=message.from_user.id)
     await message.answer("📝 Отправьте текст правил Вашего сообщества следующим сообщением:")
 
 @dp.message(RulesSetup.waiting_for_rules)
-async def rules_text_handler(message: types.Message, state: FSMContext):
-    if not await is_admin(message.chat.id, message.from_user.id): return
+async def rules_text_handler(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if message.from_user.id != data.get('admin_id'): return
     if not message.text: return
     
-    data = await state.get_data()
     await db("INSERT OR REPLACE INTO rules (chat_id, rules_text) VALUES (?, ?)", (data['chat_id'], message.text.strip()))
     await state.clear()
     await message.answer("<b>✅ ПРАВИЛА ЧАТА БЛАГОПОЛУЧНО СОХРАНЕНЫ!</b>")
 
-@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!правила", "/rules") or msg.text.lower().startswith("/rules@"))
-async def show_rules_cmd(message: types.Message):
-    r = await db("SELECT rules_text FROM rules WHERE chat_id=?", (message.chat.id,), fetch=True)
-    if r and r[0][0]:
-        await message.answer(f"📋 <b>ПРАВИЛА И РЕГЛАМЕНТ ЧАТА:</b>\n\n{r[0][0]}")
-    else:
-        await message.answer("📭 Для данной группы правила ещё не были настроены администрацией.")
-
-
-# --- СИСТЕМА ДЕЙСТВИЙ МОДЕРАЦИИ ---
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!мут","!mute"))
-async def mute_cmd(message: types.Message):
+async def mute_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
     if duration is None: return await message.answer("⚠️ Неверный формат. Используйте: !мут 30м @username")
@@ -420,10 +401,10 @@ async def mute_cmd(message: types.Message):
         await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
         await message.answer(f"🔇 Участник <b>{target_name}</b> переведен в режим чтения на {duration//60} минут.")
     except:
-        await message.answer("❌ Не хватило прав. Убедитесь, что бот является администратором чата.")
+        await message.answer("❌ Не удалось ограничить права пользователя.")
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!размут","!unmute"))
-async def unmute_cmd(message: types.Message):
+async def unmute_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
     target_id, target_name = await resolve_target_from_text(message.chat.id, target)
@@ -431,11 +412,11 @@ async def unmute_cmd(message: types.Message):
     if not target_id: return
     try:
         await bot.restrict_chat_member(message.chat.id, target_id, permissions=ChatPermissions(can_send_messages=True, can_send_media_messages=True, can_send_other_messages=True, can_send_polls=True))
-        await message.answer(f"🔊 Право отправки сообщений для <b>{target_name}</b> полностью восстановлено.")
+        await message.answer(f"🔊 Право отправки сообщений для <b>{target_name}</b> восстановлено.")
     except: pass
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!варн","!warn"))
-async def warn_cmd(message: types.Message):
+async def warn_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
     if duration is None: return await message.answer("⚠️ Формат: !варн 1д @username")
@@ -458,17 +439,8 @@ async def warn_cmd(message: types.Message):
             await message.answer(f"🚫 {target_name} автоматически заблокирован за систематические нарушения.")
         except: pass
 
-@dp.message(F.text.lower().startswith("!варны помощь"))
-async def warns_help_cmd(message: types.Message):
-    await message.answer(
-        "<b>⚜️ УПРАВЛЕНИЕ СИСТЕМОЙ ПРЕДУПРЕЖДЕНИЙ</b>\n\n"
-        "• <code>!варн [срок] [цель]</code> — Выдать предупреждение\n"
-        "• <code>!варны лимит [число]</code> — Максимальный порог до бана чата\n"
-        "• <code>!снять варны [цель]</code> — Аннулировать нарушения пользователя"
-    )
-
 @dp.message(F.text.lower().startswith("!варны лимит"))
-async def set_warn_limit(message: types.Message):
+async def set_warn_limit(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     nums = re.findall(r'\d+', message.text)
     if not nums: return
@@ -477,7 +449,7 @@ async def set_warn_limit(message: types.Message):
     await message.answer(f"⚜️ Порог автоматического бана изменен на: {limit} варна(ов)")
 
 @dp.message(F.text.lower().startswith("!снять варны"))
-async def remove_warns_cmd(message: types.Message):
+async def remove_warns_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     args = message.text[12:].strip()
     if not args: return
@@ -488,7 +460,7 @@ async def remove_warns_cmd(message: types.Message):
     await message.answer(f"⚜️ Предупреждения с пользователя {target_name} аннулированы.")
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!бан","!ban","!чс"))
-async def ban_cmd(message: types.Message):
+async def ban_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     duration, target_id, target_name = await parse_moderation_args(message)
     if not target_id: return await message.answer("❌ Участник не найден.")
@@ -506,10 +478,10 @@ async def ban_cmd(message: types.Message):
         msg += f"\n📝 Причина: {reason}"
         await message.answer(msg)
     except:
-        await message.answer("❌ Не удалось заблокировать. Проверьте права бота.")
+        await message.answer("❌ Не хватило прав на выполнение операции блокировки.")
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!разбан","!unban"))
-async def unban_cmd(message: types.Message):
+async def unban_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
     target_id, target_name = await resolve_target_from_text(message.chat.id, target)
@@ -518,11 +490,11 @@ async def unban_cmd(message: types.Message):
     await db("DELETE FROM bans WHERE user_id=? AND chat_id=?", (target_id, message.chat.id))
     try:
         await bot.unban_chat_member(message.chat.id, target_id)
-        await message.answer(f"✅ Пользователь {target_name} амнистирован и убран из ЧС.")
+        await message.answer(f"✅ Пользователь {target_name} амнистирован.")
     except: pass
 
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!кик","!kick"))
-async def kick_cmd(message: types.Message):
+async def kick_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     target = message.text.split(maxsplit=1)[-1].strip() if len(message.text.split())>1 else ""
     target_id, target_name = await resolve_target_from_text(message.chat.id, target)
@@ -536,17 +508,17 @@ async def kick_cmd(message: types.Message):
     except: pass
 
 @dp.message(F.text.lower().startswith("!амнистия"))
-async def amnesty_cmd(message: types.Message):
+async def amnesty_cmd(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     rows = await db("SELECT user_id FROM bans WHERE chat_id=?", (message.chat.id,), fetch=True)
     for (uid,) in rows:
         try: await bot.unban_chat_member(message.chat.id, uid)
         except: pass
     await db("DELETE FROM bans WHERE chat_id=?", (message.chat.id,))
-    await message.answer("🔓 <b>Глобальная амнистия чата:</b> все блокировки аннулированы.")
+    await message.answer("🔓 <b>Глобальная амнистия:</b> ЧС чата полностью очищен.")
 
 @dp.message(F.text.lower().startswith("!банлист"))
-async def banlist_cmd(message: types.Message):
+async def banlist_cmd(message: Message):
     rows = await db("SELECT user_id, reason, banned_until FROM bans WHERE chat_id=?", (message.chat.id,), fetch=True)
     if not rows: return await message.answer("📭 Список заблокированных пользователей пуст.")
     lines = []
@@ -559,10 +531,8 @@ async def banlist_cmd(message: types.Message):
         lines.append(f"• {name} — {reason} ({dur})")
     await message.answer("🚫 <b>СПИСОК БЛОКИРОВОК ЧАТА:</b>\n\n" + "\n".join(lines))
 
-
-# --- УПРАВЛЕНИЕ СПИСКОМ СПАМ-ФИЛЬТРА СЛОВ ---
 @dp.message(F.text.lower().startswith("!запретслово"))
-async def add_forbidden_word(message: types.Message):
+async def add_forbidden_word(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2: return await message.answer("Использование: !запретслово [слово]")
@@ -570,36 +540,42 @@ async def add_forbidden_word(message: types.Message):
     if not word: return
     try:
         await db("INSERT OR IGNORE INTO forbidden_words (chat_id, word) VALUES (?,?)", (message.chat.id, word))
-        await message.answer(f"🔞 Слово «{word}» добавлено в filter анти-мата.")
+        await message.answer(f"🔞 Слово «{word}» добавлено в фильтр.")
     except: pass
 
 @dp.message(F.text.lower().startswith("!разрешслово"))
-async def del_forbidden_word(message: types.Message):
+async def del_forbidden_word(message: Message):
     if not await is_admin(message.chat.id, message.from_user.id): return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2: return await message.answer("Использование: !разрешслово [слово]")
     word = parts[1].strip().lower()
     await db("DELETE FROM forbidden_words WHERE chat_id=? AND word=?", (message.chat.id, word))
-    await message.answer(f"🔓 Слово «{word}» исключено из фильтра мата.")
+    await message.answer(f"🔓 Слово «{word}» убрано из фильтра.")
 
 @dp.message(F.text.lower().startswith("!списокзапретов"))
-async def list_forbidden_words(message: types.Message):
+async def list_forbidden_words(message: Message):
     chat_words = [row[0] for row in await db("SELECT word FROM forbidden_words WHERE chat_id=?", (message.chat.id,), fetch=True)]
     words = DEFAULT_FORBIDDEN + chat_words
-    await message.answer("🔞 <b>СПИСОК ФИЛЬТРУЕМЫХ СЛОВ ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
+    await message.answer("🔞 <b>ФИЛЬТРУЕМЫЕ СЛОВА ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
 
 
-# --- СИСТЕМНЫЙ ВХОД УЧАСТНИКОВ И ВЕРИФИКАЦИЯ ---
+# --- СИСТЕМНЫЙ ВХОД И ИНТЕРАКТИВНАЯ ВЕРИФИКАЦИЯ ---
+
 @dp.message(F.new_chat_members)
-async def new_member_handler(message: types.Message):
+async def new_member_handler(message: Message):
     chat_id = message.chat.id
     welcome_data = await db("SELECT file_id, media_type, caption FROM welcomes WHERE chat_id=?", (chat_id,), fetch=True)
-    bot_info = await bot.get_me()
+    
+    try:
+        bot_info = await bot.get_me()
+        bot_username = bot_info.username
+    except:
+        bot_username = "bot"
 
     for member in message.new_chat_members:
         if member.is_bot: continue
         
-        # 1. СРАЗУ ОГРАНИЧИВАЕМ ПРАВА (включаем мут), пока не пройдена верификация
+        # Полное ограничение прав на отправку сообщений (мут на входе)
         try:
             await bot.restrict_chat_member(
                 chat_id=chat_id,
@@ -607,21 +583,20 @@ async def new_member_handler(message: types.Message):
                 permissions=ChatPermissions(can_send_messages=False)
             )
         except Exception as e:
-            logging.error(f"Failed to restrict new member: {e}")
+            logging.error(f"Restrict error: {e}")
 
         name = member.first_name or "Участник"
         mention = f'<a href="tg://user?id={member.id}">{name}</a>'
         gender_verb = detect_gender_verb(member.first_name)
         
-        # Интерактивные inline-кнопки (Кнопка верификации шлет callback)
         welcome_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_info.username}"),
+                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_username}"),
                 InlineKeyboardButton(text="🛡 Пройти верификацию", callback_data=f"verify_{member.id}")
             ]
         ])
         
-        if welcome_data:
+        if welcome_data and welcome_data[0]:
             file_id, media_type, caption = welcome_data[0]
             text = caption.replace("{name}", name).replace("{mention}", mention).replace("{verb}", gender_verb)
             try:
@@ -636,30 +611,30 @@ async def new_member_handler(message: types.Message):
                     await bot.send_video(chat_id, file_id, caption=text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
                 elif media_type == "animation":
                     await bot.send_animation(chat_id, file_id, caption=text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
+                continue
             except Exception as e:
-                logging.error(f"Welcome media send error: {e}")
-        else:
-            default_text = (
-                f"👋 Привет, {mention}! Рады, что ты <b>{gender_verb}</b> в чат мессенджера VOID!\n\n"
-                f"⚠️ Обязательно посмотри правила через команду /rules, ИЛИ ЖЕ в отдельной ветке сообщества!"
-            )
-            await message.answer(default_text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
+                logging.error(f"Media send failed: {e}")
+        
+        default_text = (
+            f"👋 Привет, {mention}!\n\n"
+            f"Рады, что ты <b>{gender_verb}</b> в чат мессенджера VOID!\n"
+            f"⚠️ Нажми кнопку <b>«🛡 Пройти верификацию»</b> ниже, чтобы разблокировать отправку сообщений."
+        )
+        try:
+            await bot.send_message(chat_id, default_text, reply_markup=welcome_keyboard, message_thread_id=tid(message))
+        except Exception as e:
+            logging.error(f"Text send failed: {e}")
 
-
-# --- ОБРАБОТКА НАЖАТИЯ НА КНОПКУ ВЕРИФИКАЦИИ ---
 @dp.callback_query(F.data.startswith("verify_"))
 async def process_verification(callback: CallbackQuery):
     target_user_id = int(callback.data.split("_")[1])
     clicker_user_id = callback.from_user.id
-    
-    # Проверяем, что кнопку нажал именно тот новичок, для которого она была создана
-    if clicker_user_id != target_user_id:
-        return await callback.answer("❌ Эта кнопка создана для другого участника!", show_alert=True)
-        
     chat_id = callback.message.chat.id
     
+    if clicker_user_id != target_user_id:
+        return await callback.answer("❌ Эта верификация создана не для Вас!", show_alert=True)
+        
     try:
-        # Возвращаем полные права писать сообщения
         await bot.restrict_chat_member(
             chat_id=chat_id,
             user_id=clicker_user_id,
@@ -671,14 +646,17 @@ async def process_verification(callback: CallbackQuery):
             )
         )
         
-        # Уведомляем пользователя
-        await callback.answer("✅ Верификация пройдена! Вы можете успешно писать.", show_alert=True)
+        await callback.answer("✅ Верификация успешно пройдена! Теперь Вы можете писать.", show_alert=True)
         
-        # Обновляем клавиатуру, чтобы кнопка сменилась на галочку
-        bot_info = await bot.get_me()
+        try:
+            bot_info = await bot.get_me()
+            bot_username = bot_info.username
+        except:
+            bot_username = "bot"
+            
         verified_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_info.username}"),
+                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_username}"),
                 InlineKeyboardButton(text="✅ Пройдено", callback_data="already_verified")
             ]
         ])
@@ -686,31 +664,33 @@ async def process_verification(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=verified_keyboard)
         
     except Exception as e:
-        logging.error(f"Verification error: {e}")
-        await callback.answer("❌ Ошибка верификации. Возможно, у бота нет прав администратора.", show_alert=True)
+        logging.error(f"Unmute error: {e}")
+        await callback.answer("❌ Ошибка размута. Проверьте права бота в администраторах чата!", show_alert=True)
 
 @dp.callback_query(F.data == "already_verified")
 async def process_already_verified(callback: CallbackQuery):
-    await callback.answer("Этот пользователь уже успешно верифицирован!", show_alert=False)
+    await callback.answer("Успешно верифицирован!", show_alert=False)
 
 
-# --- ТОЧКА ЗАПУСКА С ДЕИНСТАЛЛЯЦИЕЙ СТАРЫХ КОМАНД ---
+# --- ТОЧКА СТАРТА ---
+
 async def main():
     await init_db()
-    
     try: 
         await bot.delete_my_commands()
-        logging.info("♻️ Подсказки команд успешно сброшены.")
-    except Exception as e:
-        logging.error(f"Не удалось удалить старые команды: {e}")
-        
-    try: await bot.delete_webhook(drop_pending_updates=True)
-    except: pass
+    except: 
+        pass
+    try: 
+        await bot.delete_webhook(drop_pending_updates=True)
+    except: 
+        pass
     
     me = await bot.get_me()
-    print(f"✅ БОТ VOID HELPER СТАБИЛЬНО ЗАПУЩЕН НА AIOGRAM: @{me.username}")
-    try: await dp.start_polling(bot, timeout=60)
-    except KeyboardInterrupt: print("Бот выключен.")
+    print(f"Запуск прошел успешно. Профиль бота: @{me.username}")
+    await dp.start_polling(bot, timeout=60)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен.")
