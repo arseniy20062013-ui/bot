@@ -24,7 +24,7 @@ from aiogram.types import ChatPermissions, Message, InlineKeyboardMarkup, Inline
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
-TOKEN = os.getenv('BOT_TOKEN', '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY')
+TOKEN = os.getenv('BOT_TOKEN', '8203364413:AAGOjBjFHfDtdm1w5vlmqHcxhD9HpR4_MNo')
 OWNER_ID = 7173827114
 DB_NAME = 'void_bot.db'
 
@@ -51,7 +51,7 @@ DEFAULT_FORBIDDEN = [
     "фетишизм", "садомазохизм", "доминация", "квир", "трансгендер", "трансвестит",
     "бисексуал", "бисексуальность", "пансексуал", "пансексуальность", "асексуал",
     "асексуальность", "сквиртинг", "сквирт", "фаллос", "фаллический", "вагинизм",
-    "диспареуния", "аноргазмия", "преждевременная эякуляция", "эректильная дисфункция",
+    "диспареуния", "аноргазмия", "преждевременная эякуляция", "эreктильная дисфункция",
     "тестостерон", "эстроген", "афродизиак", "порнография", "порнографический",
     "порноактер", "порноактриса", "порнофильм", "порносайт", "хардкор", "софткор",
     "эротика", "эротический", "ню", "топлес", "стриптиз", "стриптизерша", "интимная стрижка",
@@ -630,7 +630,15 @@ async def process_verification(callback: CallbackQuery):
             )
         )
         
-        await callback.answer("✅ Верификация успешно пройдена! Теперь Вы можете писать.", show_alert=True)
+        await callback.answer("✅ Верификация успешно пройдена!", show_alert=True)
+        
+        # Отправка нового текстового сообщения в чат
+        user_name = callback.from_user.first_name or "Участник"
+        user_mention = f'<a href="tg://user?id={clicker_user_id}">{user_name}</a>'
+        await callback.message.answer(
+            f"🎉 {user_mention} успешно верифицировался, можешь писать!",
+            message_thread_id=tid(callback.message)
+        )
         
         verified_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
