@@ -8,12 +8,10 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Tuple
 
-# Автоматический доставищик модулей, если запускаешь на чистом Pydroid
 for module in ['aiosqlite', 'aiogram']:
     try:
         __import__(module)
     except ModuleNotFoundError:
-        logging.info(f"Установка недостающего модуля: {module}")
         subprocess.check_call([sys.executable, "-m", "pip", "install", module])
 
 import aiosqlite
@@ -21,17 +19,15 @@ from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command
 from aiogram.types import ChatPermissions, Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 
-# Конфиг авторизации и доступов
 TOKEN = os.getenv('BOT_TOKEN', '8203364413:AAHBW_Aek57yZvvSf5JzrYElxLOCky_vnEY')
 OWNER_ID = 7173827114
 DB_NAME = 'void_bot.db'
 
-# Базовый черный список слов
 DEFAULT_FORBIDDEN = [
     "камшот", "камшоты", "камшотов", "гетеро", "гетеросексуальность", "джонуанство",
     "импотенция", "интим", "интимность", "интроитус", "клитор", "клитора", "клиторов",
@@ -279,7 +275,7 @@ async def help_cmd(message: Message):
         "• <code>!разрешслово [слово]</code> — Убрать слово из фильтрации\n"
         "• <code>!списокзапретов</code> — Посмотреть базу запрещенных слов чата\n\n"
         "⚙️ <b>Конфигурация (Настройки):</b>\n"
-        "• <code>/setwelcome</code> — Наставить медиа-приветствие\n"
+        "• <code>/setwelcome</code> — Настроить медиа-приветствие\n"
         "• <code>/delwelcome</code> — Отключить приветствие\n"
         "• <code>/set rules [текст]</code> или <code>!установитьправила</code> — Записать регламент\n"
         "• <code>/rules</code> или <code>!правила</code> — Вывести правила группы\n"
@@ -299,8 +295,7 @@ async def set_welcome_cmd(message: Message, state: FSMContext):
 @dp.message(WelcomeSetup.waiting_for_media)
 async def welcome_media_handler(message: Message, state: FSMContext):
     data = await state.get_data()
-    if message.from_user.id != data.get('admin_id'): 
-        return # Игнорируем сообщения сторонних пользователей чата
+    if message.from_user.id != data.get('admin_id'): return
 
     file_id, media_type = None, None
     if message.photo: 
@@ -346,10 +341,9 @@ async def del_welcome_cmd(message: Message):
 @dp.message(Command("rules", prefix="!/"))
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!правила", "!rules"))
 async def show_rules_cmd(message: Message):
-    # Проверка: это команда установки правил или обычный вызов правил?
     text = message.text.strip()
     if text.lower().startswith(("/set rules", "!установитьправила", "/setrules")):
-        return # Перенаправляем в логику установки
+        return 
 
     r = await db("SELECT rules_text FROM rules WHERE chat_id=?", (message.chat.id,), fetch=True)
     if r and r[0][0]:
@@ -559,23 +553,14 @@ async def list_forbidden_words(message: Message):
     await message.answer("🔞 <b>ФИЛЬТРУЕМЫЕ СЛОВА ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
 
 
-# --- СИСТЕМНЫЙ ВХОД И ИНТЕРАКТИВНАЯ ВЕРИФИКАЦИЯ ---
-
 @dp.message(F.new_chat_members)
 async def new_member_handler(message: Message):
     chat_id = message.chat.id
     welcome_data = await db("SELECT file_id, media_type, caption FROM welcomes WHERE chat_id=?", (chat_id,), fetch=True)
-    
-    try:
-        bot_info = await bot.get_me()
-        bot_username = bot_info.username
-    except:
-        bot_username = "bot"
 
     for member in message.new_chat_members:
         if member.is_bot: continue
         
-        # Полное ограничение прав на отправку сообщений (мут на входе)
         try:
             await bot.restrict_chat_member(
                 chat_id=chat_id,
@@ -591,7 +576,6 @@ async def new_member_handler(message: Message):
         
         welcome_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_username}"),
                 InlineKeyboardButton(text="🛡 Пройти верификацию", callback_data=f"verify_{member.id}")
             ]
         ])
@@ -648,15 +632,8 @@ async def process_verification(callback: CallbackQuery):
         
         await callback.answer("✅ Верификация успешно пройдена! Теперь Вы можете писать.", show_alert=True)
         
-        try:
-            bot_info = await bot.get_me()
-            bot_username = bot_info.username
-        except:
-            bot_username = "bot"
-            
         verified_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text="💬 Начать писать", url=f"https://t.me/{bot_username}"),
                 InlineKeyboardButton(text="✅ Пройдено", callback_data="already_verified")
             ]
         ])
@@ -671,8 +648,6 @@ async def process_verification(callback: CallbackQuery):
 async def process_already_verified(callback: CallbackQuery):
     await callback.answer("Успешно верифицирован!", show_alert=False)
 
-
-# --- ТОЧКА СТАРТА ---
 
 async def main():
     await init_db()
