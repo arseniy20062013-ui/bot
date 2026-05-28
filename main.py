@@ -98,7 +98,8 @@ async def init_db():
         'CREATE TABLE IF NOT EXISTS bans (user_id INTEGER, chat_id INTEGER, reason TEXT DEFAULT "", banned_until INTEGER DEFAULT 0, PRIMARY KEY(user_id,chat_id))',
         'CREATE TABLE IF NOT EXISTS welcomes (chat_id INTEGER PRIMARY KEY, file_id TEXT, media_type TEXT, caption TEXT)',
         'CREATE TABLE IF NOT EXISTS forbidden_words (chat_id INTEGER, word TEXT, PRIMARY KEY(chat_id, word))',
-        'CREATE TABLE IF NOT EXISTS rules (chat_id INTEGER PRIMARY KEY, rules_text TEXT)'
+        'CREATE TABLE IF NOT EXISTS rules (chat_id INTEGER PRIMARY KEY, rules_text TEXT)',
+        'CREATE TABLE IF NOT EXISTS schedules (chat_id INTEGER PRIMARY KEY, close_time TEXT, open_time TEXT, is_enabled INTEGER DEFAULT 0, last_state TEXT DEFAULT "")'
     ]
     for q in queries:
         await db(q)
@@ -261,15 +262,19 @@ async def help_cmd(message: Message):
     await message.answer(
         "<b>⚔️ МЕНЮ КОМАНД VOID HELPER</b>\n\n"
         "🛡 <b>Администрация (Модерация чата):</b>\n"
-        "• <code>!мут [время] [цель]</code> — Чтение (Пример: <i>!мут 2ч @username</i>)\n"
+        "• <code>!мут [время] [цель]</code> — Режим чтения\n"
         "• <code>!размут [цель]</code> — Снять ограничение чата\n"
-        "• <code>!варн [время] [цель]</code> — Выдать предупреждение нарушителю\n"
+        "• <code>!варн [время] [цель]</code> — Выдать предупреждение\n"
         "• <code>!снять варны [цель]</code> — Обнулить предупреждения\n"
-        "• <code>!бан [время?] [цель] [причина]</code> — Чёрный список чата\n"
+        "• <code>!бан [время?] [цель] [причина]</code> — Блокировка в группе\n"
         "• <code>!разбан [цель]</code> — Помиловать участника\n"
-        "• <code>!кик [цель]</code> — Исключить (выгнать) из группы\n"
+        "• <code>!кик [цель]</code> — Исключить из группы\n"
         "• <code>!банлист</code> — Список забаненных аккаунтов\n"
-        "• <code>!амнистия</code> — Полная очистка ЧС группы\n\n"
+        "• <code>!амнистия</code> — Полная очистка ЧС\n\n"
+        "📅 <b>Авторасписание (Ночной замок чата по МСК):</b>\n"
+        "• <code>/setautoschedule [время_закрытия] [время_открытия]</code> — Включить режим замка чата (Пример: <i>/setautoschedule 23:00 07:00</i>)\n"
+        "• <code>/check_schedule</code> — Проверить настройки времени и статус чата\n"
+        "• <code>/delautoschedule</code> — Полностью выключить расписание чата\n\n"
         "🚫 <b>Фильтрация мата и слов:</b>\n"
         "• <code>!запретслово [слово]</code> — Внести фразу в чёрный список\n"
         "• <code>!разрешслово [слово]</code> — Убрать слово из фильтрации\n"
@@ -308,7 +313,7 @@ async def welcome_media_handler(message: Message, state: FSMContext):
         file_id = message.animation.file_id
         media_type = "animation"
     else:
-        return await message.answer("❌ Неверный формат. Пожалуйста, пришлите изображение, видео или анимацию.")
+        return await message.answer("❌ Неверный формат. Пожалуйста, пришлите изображение, видео или анимацию.\n\n<i>Чтобы остановить настройку, введите: <code>!отмена</code></i>")
     
     if message.caption:
         await db("INSERT OR REPLACE INTO welcomes (chat_id, file_id, media_type, caption) VALUES (?,?,?,?)",
@@ -553,6 +558,59 @@ async def list_forbidden_words(message: Message):
     await message.answer("🔞 <b>ФИЛЬТРУЕМЫЕ СЛОВА ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
 
 
+# --- НАСТРОЙКА АВТОРАСПИСАНИЯ ПО МСК ---
+
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!авторасписание", "/setautoschedule"))
+async def set_auto_schedule_cmd(message: Message):
+    if message.chat.type not in ("group", "supergroup"): return
+    if not await is_admin(message.chat.id, message.from_user.id): return
+    
+    parts = message.text.split()
+    if len(parts) < 3:
+        return await message.answer("⚠️ <b>Использование:</b>\n<code>/setautoschedule [время_закрытия] [время_открытия]</code>\nПример: <code>/setautoschedule 23:00 06:00</code> (время строго по МСК!)")
+    
+    close_time = parts[1].strip()
+    open_time = parts[2].strip()
+    
+    time_pattern = r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+    if not re.match(time_pattern, close_time) or not re.match(time_pattern, open_time):
+        return await message.answer("❌ Неверный формат времени! Используйте HH:MM (например, 22:30).")
+        
+    await db("INSERT OR REPLACE INTO schedules (chat_id, close_time, open_time, is_enabled, last_state) VALUES (?, ?, ?, 1, '')", 
+             (message.chat.id, close_time, open_time))
+    await message.answer(f"🔒 <b>Авторасписание успешно установлено (по МСК):</b>\n🌙 Закрытие чата: <b>{close_time}</b>\n☀️ Открытие чата: <b>{open_time}</b>\n\nБот автоматически переключит права группы в указанные минуты!")
+
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!проверитьрасписание", "/check_schedule"))
+async def check_schedule_cmd(message: Message):
+    if message.chat.type not in ("group", "supergroup"): return
+    
+    msk_tz = timezone(timedelta(hours=3))
+    now_msk = datetime.now(msk_tz).strftime("%H:%M:%S")
+    
+    r = await db("SELECT close_time, open_time, is_enabled, last_state FROM schedules WHERE chat_id=?", (message.chat.id,), fetch=True)
+    if not r or not r[0][2]:
+        return await message.answer(f"📅 <b>Авторасписание чата:</b> Отключено.\n⏰ Текущее время по МСК: <code>{now_msk}</code>")
+        
+    close_time, open_time, is_enabled, last_state = r[0]
+    status = "🌙 Чат закрыт по ночному графику" if last_state == "closed" else "☀️ Чат открыт для общения"
+    await message.answer(
+        f"📅 <b>АВТОРАСПИСАНИЕ ЧАТА (МСК)</b>\n\n"
+        f"🌙 Время закрытия: <b>{close_time}</b>\n"
+        f"☀️ Время открытия: <b>{open_time}</b>\n"
+        f"⚙️ Текущее состояние: <b>{status}</b>\n"
+        f"⏰ Текущее время по МСК: <code>{now_msk}</code>"
+    )
+
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!выключитьрасписание", "/delautoschedule"))
+async def del_auto_schedule_cmd(message: Message):
+    if message.chat.type not in ("group", "supergroup"): return
+    if not await is_admin(message.chat.id, message.from_user.id): return
+    await db("UPDATE schedules SET is_enabled=0 WHERE chat_id=?", (message.chat.id,))
+    await message.answer("📅 Авторасписание успешно отключено в этой группе.")
+
+
+# --- ФУНКЦИЯ ДЛЯ НОВЫХ УЧАСТНИКОВ И КНОПКА ВЕРИФИКАЦИИ ---
+
 @dp.message(F.new_chat_members)
 async def new_member_handler(message: Message):
     chat_id = message.chat.id
@@ -632,7 +690,6 @@ async def process_verification(callback: CallbackQuery):
         
         await callback.answer("✅ Верификация успешно пройдена!", show_alert=True)
         
-        # Отправка нового текстового сообщения в чат
         user_name = callback.from_user.first_name or "Участник"
         user_mention = f'<a href="tg://user?id={clicker_user_id}">{user_name}</a>'
         await callback.message.answer(
@@ -657,8 +714,61 @@ async def process_already_verified(callback: CallbackQuery):
     await callback.answer("Успешно верифицирован!", show_alert=False)
 
 
+# --- ФОНОВЫЙ ТАСК ДЛЯ ПРОВЕРКИ ВРЕМЕНИ ПО МСК ---
+
+async def auto_schedule_checker():
+    msk_tz = timezone(timedelta(hours=3))
+    while True:
+        try:
+            now_msk = datetime.now(msk_tz)
+            m_now = now_msk.hour * 60 + now_msk.minute
+            
+            rows = await db("SELECT chat_id, close_time, open_time, last_state FROM schedules WHERE is_enabled=1", fetch=True)
+            for chat_id, close_time, open_time, last_state in rows:
+                try:
+                    h_close, m_close = map(int, close_time.split(':'))
+                    m_close_total = h_close * 60 + m_close
+                    
+                    h_open, m_open = map(int, open_time.split(':'))
+                    m_open_total = h_open * 60 + m_open
+                    
+                    if m_close_total > m_open_total:  # Закрытие ночью (например, с 23:00 до 06:00)
+                        should_be_closed = (m_now >= m_close_total or m_now < m_open_total)
+                    else:  # Дневное закрытие чата (например, с 14:00 до 16:00)
+                        should_be_closed = (m_close_total <= m_now < m_open_total)
+                        
+                    target_state = "closed" if should_be_closed else "opened"
+                    
+                    if last_state != target_state:
+                        if target_state == "closed":
+                            await bot.set_chat_permissions(chat_id, ChatPermissions(can_send_messages=False))
+                            await bot.send_message(chat_id, "🌙 <b>Внимание! Чат автоматически закрыт согласно расписанию (МСК).</b>\nДо встречи утром! 👋")
+                        else:
+                            await bot.set_chat_permissions(
+                                chat_id, 
+                                ChatPermissions(
+                                    can_send_messages=True, 
+                                    can_send_media_messages=True, 
+                                    can_send_other_messages=True, 
+                                    can_send_polls=True
+                                )
+                            )
+                            await bot.send_message(chat_id, "☀️ <b>Доброе утро! Чат автоматически открыт (МСК).</b>\nВсем отличного дня и приятного общения! 💬")
+                        
+                        await db("UPDATE schedules SET last_state=? WHERE chat_id=?", (target_state, chat_id))
+                except Exception as chat_err:
+                    logging.error(f"Error in auto_schedule processing for chat {chat_id}: {chat_err}")
+        except Exception as e:
+            logging.error(f"Error in schedule checker loop: {e}")
+        await asyncio.sleep(30) # Проверка базы данных раз в 30 секунд
+
+
 async def main():
     await init_db()
+    
+    # Запуск фонового асинхронного таймера для расписания
+    asyncio.create_task(auto_schedule_checker())
+    
     try: 
         await bot.delete_my_commands()
     except: 
