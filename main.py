@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
 from aiogram.filters import Command
@@ -8,48 +9,76 @@ from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
 
+# Твой рабочий токен
 BOT_TOKEN = "8203364413:AAGOjBjFHfDtdm1w5vlmqHcxhD9HpR4_MNo"
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# База данных жалоб в памяти
+# Хранилища в памяти
 report_stats = {}
 
-# --- ЖЁСТКОЕ ОБНОВЛЕНИЕ МЕНЮ КОМАНД ---
+# --- СПИСОК ЗАПРЕЩЕННЫХ СЛОВ (АВТОМОДЕРАЦИЯ 18+) ---
+# Допиши сюда любые маты/слова, которые бот должен тереть
+BAD_WORDS = ["хуй", "пизда", "еблан", "хуууй", "хууй", "пидор", "сука"]
+
+# --- НАСТРОЙКА РАСПИСАНИЯ ЗАКРЫТИЯ ЧАТА ---
+# Время в формате HH:MM когда чат автоматически закрывается и открывается
+CLOSE_TIME = "23:00"
+OPEN_TIME = "07:00"
+
+# --- ОБНОВЛЕНИЕ МЕНЮ (БЕЗ КАЗИНО) ---
 async def set_bot_commands(bot: Bot):
-    # Новое чистое меню
     group_commands = [
-        BotCommand(command="help", description="📋 Инструкция"),
-        BotCommand(command="profile", description="👤 Профиль"),
-        BotCommand(command="rep", description="⚠️ Пожаловаться (в ответе)"),
-        BotCommand(command="replist", description="📊 Список жалоб (Админам)")
+        BotCommand(command="help", description="📋 Подробное меню команд"),
+        BotCommand(command="profile", description="👤 Мой профиль"),
+        BotCommand(command="rep", description="⚠️ Подать жалобу (в ответе)"),
+        BotCommand(command="replist", description="📊 Список жалоб (Админам)"),
+        BotCommand(command="check_schedule", description="🔎 Проверить расписание чата")
     ]
-    # Намертво сносим старые команды (казино, игры и т.д.) из кэша Telegram
     await bot.delete_my_commands(scope=BotCommandScopeAllGroupChats())
     await bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
-    
-    # Записываем новые команды во все типы чатов
     await bot.set_my_commands(commands=group_commands, scope=BotCommandScopeAllGroupChats())
     await bot.set_my_commands(commands=group_commands, scope=BotCommandScopeAllPrivateChats())
-    print("[Система] Меню очищено. Новые команды загружены.")
+    print("[Система] Меню команд обновлено. Лишнее удалено.")
 
 
-# --- СУХОЙ И КОРОТКИЙ HELP ---
+# --- ПОДРОБНЫЙ И ПОНЯТНЫЙ HELP ---
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     help_text = (
-        "📋 <b>Команды бота:</b>\n\n"
-        "👤 /profile — Посмотреть свой профиль\n"
-        "⚠️ /rep [причина] — Подать жалобу (ответом на сообщение нарушителя)\n"
-        "📊 /replist — Посмотреть список жалоб (Только для админов)"
+        "📋 <b>ПОДРОБНОЕ РУКОВОДСТВО ПО БОТУ</b>\n\n"
+        "👤 <b>Профиль и инфо:</b>\n"
+        "• <code>/profile</code> — Показывает твой аккаунт и ID.\n\n"
+        "⚠️ <b>Система репортов (жалоб):</b>\n"
+        "• <code>/rep [причина]</code> — Подать жалобу на нарушителя. Её нужно писать <b>строго в ответе (reply)</b> на плохое сообщение.\n"
+        "• Бот сам удалит твою команду и позовет админов.\n\n"
+        "🔞 <b>Автомодерация:</b>\n"
+        "• В чате включен фильтр мата и 18+ слов. Бот автоматически удаляет такие сообщения, чтобы группу не заблокировали.\n\n"
+        "⏰ <b>Расписание чата:</b>\n"
+        "• <code>/check_schedule</code> — Показывает время работы чата.\n"
+        f"• Чат автоматически закрывается на ночь в <b>{CLOSE_TIME}</b> и открывается в <b>{OPEN_TIME}</b>.\n\n"
+        "📊 <b>Для Администрации:</b>\n"
+        "• <code>/replist</code> — Выводит топ игроков по количеству жалоб. Доступно только админам."
     )
     await message.reply(help_text)
 
 
+# --- КОМАНДА PROFILE ---
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
-    await message.reply(f"👤 <b>Профиль:</b> {message.from_user.mention_html()}\n🆔 ID: <code>{message.from_user.id}</code>")
+    await message.reply(f"👤 <b>Профиль пользователя:</b> {message.from_user.mention_html()}\n🆔 ID: <code>{message.from_user.id}</code>")
+
+
+# --- КОМАНДА ПРОВЕРКИ РАСПИСАНИЯ ---
+@dp.message(Command("check_schedule"))
+async def cmd_schedule(message: Message):
+    await message.reply(
+        f"🔎 <b>Расписание работы чата:</b>\n\n"
+        f"🔓 Открытие чата: <code>{OPEN_TIME}</code>\n"
+        f"🔒 Закрытие чата: <code>{CLOSE_TIME}</code>\n\n"
+        f"<i>В нерабочее время бот будет автоматически удалять сообщения от обычных пользователей.</i>"
+    )
 
 
 # --- СИСТЕМА РЕПОРТОВ (ЖАЛОБ) ---
@@ -85,10 +114,9 @@ async def report_user(message: Message):
     )
     
     await message.answer(report_text, disable_web_page_preview=True)
-    
     try:
         await message.delete()
-    except Exception:
+    except:
         pass
 
 
@@ -97,7 +125,6 @@ async def report_user(message: Message):
 async def show_report_list(message: Message, bot: Bot):
     if message.chat.type in ["group", "supergroup"]:
         member = await bot.get_chat_member(chat_id=message.chat.id, user_id=message.from_user.id)
-        
         if member.status not in ["administrator", "creator"]:
             await message.reply("🔒 <b>Доступ заблокирован:</b> Эта команда доступна только администраторам группы.")
             return
@@ -107,12 +134,41 @@ async def show_report_list(message: Message, bot: Bot):
         return
 
     sorted_reports = sorted(report_stats.items(), key=lambda x: x[1], reverse=True)
-    
     text = "📊 <b>Топ нарушителей чата:</b>\n\n"
     for index, (user_id, count) in enumerate(sorted_reports[:10], start=1):
         text += f"<b>{index}.</b> ID: <code>{user_id}</code> — <b>{count}</b> репортов.\n"
-        
     await message.reply(text)
+
+
+# --- ФИЛЬТР МАТА И АВТОМОВЕРАЦИЯ ПО ВРЕМЕНИ ---
+@dp.message(F.text)
+async def автомодерация(message: Message, bot: Bot):
+    # 1. Проверяем расписание (закрыт ли чат)
+    now = datetime.now().strftime("%H:%M")
+    if now >= CLOSE_TIME or now < OPEN_TIME:
+        # Проверяем, админ ли пишет. Если обычный юзер — сносим сообщение
+        if message.chat.type in ["group", "supergroup"]:
+            member = await bot.get_chat_member(chat_id=message.chat.id, user_id=message.from_user.id)
+            if member.status not in ["administrator", "creator"]:
+                try:
+                    await message.delete()
+                except:
+                    pass
+                return
+
+    # 2. Проверяем 18+ слова
+    text_lower = message.text.lower()
+    for word in BAD_WORDS:
+        if word in text_lower:
+            try:
+                await message.delete()
+                # Опционально: бот может написать предупреждение
+                alert = await message.answer(f"⚠️ {message.from_user.first_name}, твоё сообщение удалено за мат.")
+                await asyncio.sleep(5)
+                await alert.delete() # Удаляем пред через 5 сек, чтоб не засирать чат
+            except:
+                pass
+            break
 
 
 # --- ЗАПУСК ---
