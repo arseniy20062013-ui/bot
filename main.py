@@ -28,7 +28,7 @@ TOKEN = os.getenv('BOT_TOKEN', '8203364413:AAGOjBjFHfDtdm1w5vlmqHcxhD9HpR4_MNo')
 OWNER_ID = 7173827114
 DB_NAME = 'void_bot.db'
 
-# Хранилище репортов в оперативной памяти (сбрасывается при перезапуске)
+# Оперативное хранилище для репортов (сбрасывается при перезапуске бота)
 report_stats = {}
 
 DEFAULT_FORBIDDEN = [
@@ -260,40 +260,37 @@ async def start_cmd(message: Message):
         "ℹ️ Добавьте меня в админы группы и введите команду: <code>!help</code>"
     )
 
-# --- НОВЫЙ ПОДРОБНЫЙ, КРАСИВЫЙ И ПОНЯТНЫЙ HELP ---
 @dp.message(Command("help", "помощь", prefix="!/"))
 async def help_cmd(message: Message):
     await message.answer(
         "<b>⚔️ МЕНЮ КОМАНД VOID HELPER</b>\n\n"
         "🛡 <b>Администрация (Модерация чата):</b>\n"
-        "• <code>!мут [время] [цель]</code> — Ограничить отправку сообщений (Пример: <i>!мут 30м @username</i>)\n"
-        "• <code>!размут [цель]</code> — Вернуть пользователю право писать\n"
-        "• <code>!варн [время] [цель]</code> — Выдать предупреждение с таймером истечения\n"
-        "• <code>!варны лимит [число]</code> — Установить порог варнов для автобана\n"
-        "• <code>!снять варны [цель]</code> — Полностью обнулить предупреждения юзера\n"
-        "• <code>!бан [время?] [цель] [причина]</code> — Заблокировать и исключить из группы\n"
-        "• <code>!разбан [цель]</code> — Удалить пользователя из чёрного списка группы\n"
-        "• <code>!кик [цель]</code> — Исключить участника из чата (сможет вернуться обратно)\n"
-        "• <code>!банлист</code> — Просмотр всех заблокированных аккаунтов чата\n"
-        "• <code>!амнистия</code> — Полная амнистия и очистка ЧС группы\n\n"
+        "• <code>!мут [время] [цель]</code> — Выдать мут (запрет писать)\n"
+        "• <code>!размут [цель]</code> — Снять мут с участника\n"
+        "• <code>!варн [время] [цель]</code> — Выдать предупреждение\n"
+        "• <code>!снять варны [цель]</code> — Обнулить предупреждения\n"
+        "• <code>!бан [время?] [цель] [причина]</code> — Блокировка (Бан в группе)\n"
+        "• <code>!разбан [цель]</code> — Помиловать участника (Разбан)\n"
+        "• <code>!кик [цель]</code> — Исключить из группы\n"
+        "• <code>!банлист</code> — Список забаненных аккаунтов\n"
+        "• <code>!амнистия</code> — Полная очистка ЧС\n\n"
         "⚠️ <b>Система пользовательских жалоб:</b>\n"
-        "• <code>!rep [причина]</code> или <code>!report [причина]</code>\n"
-        "  <i>Применение: Напиши команду строго <b>в ответе (reply)</b> на сообщение нарушителя. Бот сотрет её и вызовет админов.</i>\n"
-        "• <code>!replist</code> — Просмотр топ-нарушителей чата по количеству жалоб (🔒 <i>Только для Админов</i>)\n\n"
+        "• <code>!rep [причина]</code> — Подать жалобу на сообщение нарушителя (писать строго реплаем)\n"
+        "• <code>!replist</code> — Вывести топ нарушителей чата (🔒 <i>Только для Админов</i>)\n\n"
         "📅 <b>Авторасписание (Ночной мут чата по МСК):</b>\n"
-        "• <code>/setautoschedule [закрытие] [открытие]</code> — Автомутить чат на ночь (Пример: <i>/setautoschedule 23:00 07:00</i>)\n"
-        "• <code>/check_schedule</code> или <code>!проверитьрасписание</code> — Проверить статус работы и время МСК\n"
-        "• <code>/delautoschedule</code> или <code>!выключитьрасписание</code> — Отключить ночной мут чата\n\n"
-        "🚫 <b>Фильтрация мата и слов (18+):</b>\n"
-        "• <code>!запретслово [слово]</code> — Добавить слово в локальный чёрный список группы\n"
-        "• <code>!разрешслово [слово]</code> — Удалить слово из базы фильтрации\n"
-        "• <code>!списокзапретов</code> — Посмотреть текущую базу запрещенных фраз чата\n\n"
+        "• <code>/setautoschedule [время_закрытия] [время_открытия]</code> — Включить режим автомута чата (Пример: <i>/setautoschedule 23:00 07:00</i>)\n"
+        "• <code>/check_schedule</code> — Проверить настройки времени и статус блокировки\n"
+        "• <code>/delautoschedule</code> — Полностью выключить расписание чата\n\n"
+        "🚫 <b>Фильтрация мата и слов:</b>\n"
+        "• <code>!запретслово [слово]</code> — Внести фразу в чёрный список\n"
+        "• <code>!разрешслово [слово]</code> — Убрать слово из фильтрации\n"
+        "• <code>!списокзапретов</code> — Посмотреть базу запрещенных слов чата\n\n"
         "⚙️ <b>Конфигурация (Настройки):</b>\n"
-        "• <code>/setwelcome</code> — Интерактивная настройка приветствия (Медиа + Текст)\n"
-        "• <code>/delwelcome</code> — Полностью отключить приветствие новых участников\n"
-        "• <code>/set rules [текст]</code> или <code>!установитьправила</code> — Записать регламент группы\n"
-        "• <code>/rules</code> или <code>!правила</code> — Показать правила группы\n"
-        "• <code>!отмена</code> — Сбросить текущую пошаговую настройку бота"
+        "• <code>/setwelcome</code> — Настроить медиа-приветствие\n"
+        "• <code>/delwelcome</code> — Отключить приветствие\n"
+        "• <code>/set rules [текст]</code> или <code>!установитьправила</code> — Записать регламент\n"
+        "• <code>/rules</code> или <code>!правила</code> — Вывести правила группы\n"
+        "• <code>!отмена</code> — Прервать настройку"
     )
 
 @dp.message(Command("setwelcome", prefix="!/"))
@@ -567,12 +564,12 @@ async def list_forbidden_words(message: Message):
     await message.answer("🔞 <b>ФИЛЬТРУЕМЫЕ СЛОВА ЧАТА:</b>\n\n" + ", ".join(words[:30]) + ("..." if len(words)>30 else ""))
 
 
-# --- СИСТЕМА РЕПОРТОВ (ЖАЛОБ) И ТОП НАРУШИТЕЛЕЙ ---
+# --- ИНТЕРАКТИВНАЯ СИСТЕМА РЕПОРТОВ С КНОПКАМИ ДЛЯ АДМИНОВ ---
 
-@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!rep", "!report", "/rep", "/report"))
+@dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!rep", "!report"))
 async def report_user_cmd(message: Message):
     if not message.reply_to_message:
-        await message.reply("❌ Чтобы пожаловаться, напиши команду <code>!rep [причина]</code> <b>в ответе (reply)</b> на сообщение нарушителя!")
+        await message.reply("❌ Команду <code>!rep</code> нужно писать <b>в ответе (reply)</b> на сообщение нарушителя!")
         return
 
     target_user = message.reply_to_message.from_user
@@ -583,52 +580,114 @@ async def report_user_cmd(message: Message):
         return
 
     parts = message.text.split(maxsplit=1)
-    reason = parts[1] if len(parts) > 1 else "Причина не указана"
+    reason = parts[1] if len(parts) > 1 else "Не указана"
 
     chat_username = message.chat.username
     msg_link = f"https://t.me/{chat_username}/{message.reply_to_message.message_id}" if chat_username else "Приватный чат"
 
-    # Инкрементируем счетчик репортов
+    # Ведем статистику в памяти
     report_stats[target_user.id] = report_stats.get(target_user.id, 0) + 1
 
     report_text = (
-        f"⚠️ <b>[🚨 ПОСТУПИЛ РЕПОРТ!]</b>\n\n"
+        f"🚨 <b>ЖАЛОБА НА ПОЛЬЗОВАТЕЛЯ!</b>\n\n"
         f"👤 <b>Нарушитель:</b> {target_user.mention_html()} (ID: <code>{target_user.id}</code>)\n"
-        f"✍️ <b>Кто отправил:</b> {reporter.mention_html()}\n"
+        f"✍️ <b>Отправил:</b> {reporter.mention_html()}\n"
         f"📝 <b>Причина:</b> {reason}\n"
-        f"📊 Всего жалоб на юзера: <code>{report_stats[target_user.id]}</code>\n"
+        f"📊 Всего жалоб на него: <code>{report_stats[target_user.id]}</code>\n"
         f"🔗 <a href='{msg_link}'>Перейти к сообщению нарушителя</a>\n\n"
-        f"📢 <b>Администраторы, разберитесь с нарушением!</b>"
+        f"⚡️ <b>Действия для администрации:</b>"
     )
     
-    await message.answer(report_text, disable_web_page_preview=True)
+    # Кнопки быстрых действий для админов (время в часах)
+    report_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⚠️ Мут (1ч)", callback_data=f"repaction_mute_{target_user.id}"),
+            InlineKeyboardButton(text="🚫 Бан (24ч)", callback_data=f"repaction_ban_{target_user.id}")
+        ],
+        [
+            InlineKeyboardButton(text="✅ Отпустить", callback_data="repaction_dismiss")
+        ]
+    ])
+    
+    await message.answer(report_text, reply_markup=report_keyboard, disable_web_page_preview=True)
     try:
-        await message.delete()
+        await message.delete()  # Стираем сам текст "!rep" из чата
     except:
         pass
 
+@dp.callback_query(F.data.startswith("repaction_"))
+async def process_report_action(callback: CallbackQuery):
+    chat_id = callback.message.chat.id
+    admin_id = callback.from_user.id
+    
+    # Проверяем, является ли нажавший админом или владельцем
+    if not await is_admin(chat_id, admin_id):
+        await callback.answer("❌ Вы не являетесь администратором этого чата!", show_alert=True)
+        return
+        
+    action_parts = callback.data.split("_")
+    action = action_parts[1]
+    
+    if action == "dismiss":
+        await callback.answer("Жалоба отклонена", show_alert=False)
+        await callback.message.edit_text(f"{callback.message.text}\n\n✅ <i>Жалоба была отклонена администратором {callback.from_user.full_name}.</i>", reply_markup=None)
+        return
+        
+    target_id = int(action_parts[2])
+    
+    try:
+        target_member = await bot.get_chat_member(chat_id, target_id)
+        target_name = target_member.user.first_name or f"ID: {target_id}"
+    except:
+        target_name = f"ID: {target_id}"
+
+    if await is_admin(chat_id, target_id):
+        await callback.answer("❌ Нельзя применить действие к администратору!", show_alert=True)
+        return
+
+    if action == "mute":
+        # Выдаем мут на 1 час (время в часах)
+        until = datetime.now(timezone.utc) + timedelta(hours=1)
+        try:
+            await bot.restrict_chat_member(chat_id, target_id, permissions=ChatPermissions(can_send_messages=False), until_date=until)
+            await callback.answer("Пользователь замучен на 1 час", show_alert=False)
+            await callback.message.edit_text(f"{callback.message.text}\n\n🔇 <b>Применено:</b> Мут на 1 час админом {callback.from_user.full_name}.", reply_markup=None)
+        except Exception as e:
+            await callback.answer(f"Ошибка ограничения прав: {e}", show_alert=True)
+
+    elif action == "ban":
+        # Выдаем бан на 24 часа (время в часах)
+        until = datetime.now(timezone.utc) + timedelta(hours=24)
+        try:
+            await db("INSERT OR REPLACE INTO bans (user_id, chat_id, reason, banned_until) VALUES (?,?,'По репорту участников',?)", 
+                     (target_id, chat_id, int(until.timestamp())))
+            await bot.ban_chat_member(chat_id, target_id, until_date=until)
+            await callback.answer("Пользователь забанен на 24 часа", show_alert=False)
+            await callback.message.edit_text(f"{callback.message.text}\n\n🚫 <b>Применено:</b> Бан на 24 часа админом {callback.from_user.full_name}.", reply_markup=None)
+        except Exception as e:
+            await callback.answer(f"Ошибка блокировки: {e}", show_alert=True)
+
+# Команда для вывода топа репортов (работает только для админов)
 @dp.message(lambda msg: msg.text and msg.text.lower().split()[0] in ("!replist", "/replist"))
 async def show_report_list_cmd(message: Message):
-    # Ограничение: проверка прав админа/овнера
     if message.chat.type in ["group", "supergroup"]:
         if not await is_admin(message.chat.id, message.from_user.id):
-            await message.reply("🔒 <b>Доступ заблокирован:</b> Команда просмотра базы жалоб доступна только администрации чата.")
+            await message.reply("🔒 Действие доступно только для администрации чата.")
             return
 
     if not report_stats:
-        await message.reply("📭 Список жалоб пуст. В группе идеальный порядок!")
+        await message.reply("📭 Список жалоб пуст.")
         return
 
     sorted_reports = sorted(report_stats.items(), key=lambda x: x[1], reverse=True)
-    
-    text = "📊 <b>Топ пользователей по количеству жалоб:</b>\n\n"
-    for index, (user_id, count) in enumerate(sorted_reports[:10], start=1):
+    text = "📊 <b>Список пользователей с жалобами:</b>\n\n"
+    for idx, (user_id, count) in enumerate(sorted_reports[:10], start=1):
         try:
-            user_chat = await bot.get_chat(user_id)
-            name_str = user_chat.first_name or f"ID: {user_id}"
+            u = await bot.get_chat(user_id)
+            name = u.first_name or f"ID: {user_id}"
         except:
-            name_str = f"ID: {user_id}"
-        text += f"<b>{index}.</b> {name_str} — <b>{count}</b> репортов.\n"
+            name = f"ID: {user_id}"
+        text += f"<b>{idx}.</b> {name} — <b>{count}</b> жалоб(ы).\n"
         
     await message.reply(text)
 
@@ -642,7 +701,7 @@ async def set_auto_schedule_cmd(message: Message):
     
     parts = message.text.split()
     if len(parts) < 3:
-        return await message.answer("⚠️ <b>Использование:</b>\n<code>/setautoschedule [время_закрытия] [время_открытия]</code>\nПример: <code>/setautoschedule 23:00 06:00</code> (время строго по МСК!)")
+        return await message.answer("⚠️ <b>Использование:</b>\n<code>/setautoschedule [время_закрытия] [время_открытия]</code>\nПример: <code>/setautoschedule 23:00 07:00</code> (время строго по МСК!)")
     
     close_time = parts[1].strip()
     open_time = parts[2].strip()
@@ -845,7 +904,6 @@ async def main():
     asyncio.create_task(auto_schedule_checker())
     
     try: 
-        # Намертво сносим кэш старых команд во избежание конфликтов
         await bot.delete_my_commands()
     except: 
         pass
